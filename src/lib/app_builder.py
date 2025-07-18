@@ -1,0 +1,1358 @@
+#!/usr/bin/env python3
+"""
+Enhanced NextJS App Builder
+A Python script that interfaces with multiple LLM providers to generate NextJS applications
+with robust fallback handling and response validation.
+"""
+
+import os
+import sys
+import json
+import re
+from datetime import datetime
+from typing import Optional, List, Dict, Any, Tuple
+import requests
+import argparse
+import time
+
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # Load .env file from current directory
+except ImportError:
+    # dotenv not installed, continue without it
+    pass
+
+# Import the new indexing system
+from .indexing import CodebaseIndexer
+
+
+class MultiLLMAppBuilder:
+    def __init__(self, openai_api_key=None, openrouter_api_key=None):
+        """Initialize the app builder with multiple LLM providers."""
+        self.openai_api_key = openai_api_key or os.getenv('OPENAI_API_KEY')
+        self.openrouter_api_key = openrouter_api_key or os.getenv('OPENROUTER_API_KEY')
+        
+        # Initialize OpenAI client if key is available
+        self.openai_client = None
+        if self.openai_api_key:
+            try:
+                from openai import OpenAI
+                self.openai_client = OpenAI(api_key=self.openai_api_key)
+            except ImportError:
+                print("⚠️ OpenAI package not installed")
+        
+        # Initialize the codebase indexer (will be set when needed)
+        self._indexer: Optional[CodebaseIndexer] = None
+        self._indexer_app_path: Optional[str] = None
+        
+        # Define LLM provider configurations
+        self.llm_providers = [
+            {
+                "name": "GPT-4o",
+                "type": "openai",
+                "model": "gpt-4o",
+                "max_tokens": 4000,
+                "temperature": 0.7
+            },
+            {
+                "name": "Claude-3.5 Sonnet",
+                "type": "openrouter",
+                "model": "anthropic/claude-3.5-sonnet",
+                "max_tokens": 4000,
+                "temperature": 0.7
+            },
+            {
+                "name": "Gemini Pro",
+                "type": "openrouter",
+                "model": "google/gemini-pro-1.5",
+                "max_tokens": 4000,
+                "temperature": 0.7
+            },
+            {
+                "name": "DeepSeek Coder",
+                "type": "openrouter",
+                "model": "deepseek/deepseek-coder",
+                "max_tokens": 4000,
+                "temperature": 0.7
+            },
+            {
+                "name": "Qwen Coder",
+                "type": "openrouter",
+                "model": "qwen/qwen-2.5-coder-32b-instruct",
+                "max_tokens": 4000,
+                "temperature": 0.7
+            },
+            {
+                "name": "Grok Beta",
+                "type": "openrouter",
+                "model": "x-ai/grok-beta",
+                "max_tokens": 4000,
+                "temperature": 0.7
+            }
+        ]
+        
+    def get_system_prompt(self):
+        """Get the system prompt that instructs the LLM to use the correct syntax."""
+        return """You are an expert NextJS developer. When given an app idea, you will create a complete, feature-rich NextJS application using the specified syntax format.
+
+🚨 CRITICAL JSX SYNTAX RULES - FAILURE TO FOLLOW WILL BREAK THE APP! 🚨
+
+1. **RETURN STATEMENT SYNTAX**: ALWAYS end JSX return statements with closing parenthesis `)`, NEVER with curly brace `}`
+   
+   ✅ CORRECT JSX RETURN:
+   ```javascript
+   return (
+     <div className="container">
+       <h1>Title</h1>
+       <p>Content</p>
+     </div>
+   )  // ← ENDS WITH CLOSING PARENTHESIS
+   ```
+   
+   ❌ WRONG JSX RETURN (WILL BREAK BUILD):
+   ```javascript
+   return (
+     <div className="container">
+       <h1>Title</h1>
+       <p>Content</p>
+     </div>
+   }  // ← WRONG - ENDS WITH CURLY BRACE
+   ```
+
+🚨 CRITICAL TYPESCRIPT STRUCTURE RULES 🚨
+
+2. **INTERFACE DEFINITIONS**: ALWAYS define interfaces OUTSIDE and BEFORE function components
+   
+   ✅ CORRECT TYPESCRIPT STRUCTURE:
+   ```typescript
+   "use client"
+   import { useState } from 'react'
+   
+   interface CartItem {  // ← DEFINED AT TOP LEVEL
+     name: string;
+     price: number;
+   }
+   
+   export default function Component() {
+     const [items, setItems] = useState<CartItem[]>([])
+     // component logic...
+   }
+   ```
+   
+   ❌ WRONG TYPESCRIPT STRUCTURE (WILL BREAK BUILD):
+   ```typescript
+   export default function Component() {
+     interface CartItem {  // ← WRONG - INSIDE FUNCTION
+       name: string;
+       price: number;
+     }
+     const [items, setItems] = useState<CartItem[]>([])
+   }
+   ```
+
+3. **TYPE ANNOTATIONS**: Always provide proper TypeScript types for useState, props, and function parameters
+
+4. **IMPORT STATEMENTS**: Place all imports at the top of the file, before any interface or type definitions
+
+5. **VALIDATION CHECKPOINT**: Before writing any TypeScript code, ask yourself:
+   - Are all interfaces defined at the top level?
+   - Are useState hooks properly typed?
+   - Do all components have proper TypeScript structure?
+
+🔧 NEXT.JS 14 APP DIRECTORY STRUCTURE:
+- Use `"use client"` directive for client components with state/effects
+- Use `app/` directory structure for routing
+- Import from `'next/link'` for navigation
+- Use proper file naming: `page.tsx` for pages, `layout.tsx` for layouts
+
+🎨 STYLING REQUIREMENTS:
+- Use ONLY standard Tailwind CSS classes
+- NO custom CSS classes or inline styles
+- Use responsive design patterns (sm:, md:, lg:, xl:)
+- Implement proper color schemes and spacing
+
+3. **VALIDATION CHECKPOINT**: Before writing any JSX, ask yourself:
+   - Does my return statement end with `)` and NOT `}`?
+   - Are all JSX tags properly closed?
+   - Is the indentation consistent?
+
+CRITICAL INSTRUCTIONS:
+1. Use ONLY the following syntax for new files:
+<new filename="FILE_PATH/FILE_NAME">
+CODE
+</new>
+
+2. Use ONLY the following syntax for editing existing files:
+<edit filename="FILE_PATH/FILE_NAME" start_line="#" end_line="#">
+CODE
+</edit>
+
+3. **FOR INITIAL APP CREATION: ALWAYS use <new> tags for app/page.tsx**
+   - This completely replaces the template page with your app
+   - Never use <edit> tags when creating the main application page initially
+   - Example: <new filename="app/page.tsx">YOUR_APP_CODE</new>
+
+4. The NextJS template already includes ALL configuration files pre-configured and working:
+   - package.json (React 18.2.0, Next.js 14.0.0, Tailwind CSS v3.4.0)
+   - tailwind.config.js (CommonJS format with proper content paths)
+   - postcss.config.js (CommonJS format with tailwindcss and autoprefixer)
+   - next.config.mjs (clean ES modules format)
+   - tsconfig.json (standard Next.js TypeScript configuration)
+   - app/globals.css (with @tailwind directives already included)
+   - app/layout.tsx (basic layout importing globals.css)
+   - components/Navigation.tsx (example navigation component)
+
+5. DO NOT generate or modify these CONFIGURATION files: package.json, tailwind.config.js, postcss.config.js, next.config.mjs, tsconfig.json, app/globals.css, app/layout.tsx
+
+6. **ALWAYS CREATE app/page.tsx with <new> tag for initial app creation!**
+
+7. APPLICATION COMPLEXITY GUIDELINES:
+   - For "simple" requests: Create single-page applications with minimal navigation
+   - For complex requests: Create multi-page applications with full navigation
+   - Match the complexity to the user's request, not always maximum features
+
+Remember: Create clean, working files that maintain the app's purpose while fixing all syntax errors."""
+
+    def get_user_prompt(self, app_idea):
+        """Create the user prompt with the app idea."""
+        return f"""Build a NextJS application for the following idea:
+
+{app_idea}
+
+IMPORTANT: All configuration files are already set up and working perfectly:
+- ✅ NextJS 14.0.0 with app router
+- ✅ TypeScript configured
+- ✅ Tailwind CSS v3.4.0 configured and compiling
+- ✅ PostCSS and autoprefixer configured
+- ✅ Basic layout and navigation components provided
+
+YOUR TASK: Focus ONLY on creating the application features and logic!
+
+CRITICAL FOR INITIAL APP CREATION:
+- **ALWAYS use <new filename="app/page.tsx"> to create the main application page**
+- This completely replaces the template page with your actual app
+- DO NOT use <edit> tags for the main page during initial creation
+
+COMPLEXITY GUIDELINES:
+- If the request mentions "simple" or is for basic tools (todo, calculator, counter, etc.): Create a single-page application
+- If the request is for complex systems (e-commerce, social media, multi-feature apps): Create multi-page applications
+
+REQUIRED ACTIONS:
+1. **ALWAYS create app/page.tsx using <new> tag with the main application functionality**
+2. Create supporting components as needed using <new> tag
+3. Add additional pages only if the request clearly needs multiple views
+
+DO NOT CREATE OR MODIFY:
+- package.json, tailwind.config.js, postcss.config.js, next.config.mjs, tsconfig.json
+- app/globals.css, app/layout.tsx (unless adding specific metadata)
+
+CREATE AS NEEDED:
+- app/page.tsx (REQUIRED - use <new> tag to replace template with actual app)
+- Additional pages (app/*/page.tsx) only for complex applications
+- Custom components (components/*.tsx)
+- TypeScript interfaces (types/*.ts)
+- Utility functions (utils/*.ts)
+- Mock data files (data/*.ts)
+
+FOR SIMPLE APPLICATIONS:
+Focus on a single-page experience with:
+- Clean, focused UI
+- Essential functionality only
+- Minimal navigation (if any)
+- Direct interaction on the main page
+
+FOR COMPLEX APPLICATIONS:
+Create a multi-page experience with:
+- Navigation between different sections
+- Multiple feature areas
+- User authentication flows
+- Data management across pages
+
+SPECIFIC FEATURES BY APP TYPE:
+
+If it's a SIMPLE TODO/TASK app:
+- Single page with task input, list, and management
+- Local state management
+- Add, remove, complete functionality
+- No complex routing needed
+
+If it's a SIMPLE CALCULATOR/TOOL:
+- Single page with the tool interface
+- State management for calculations/data
+- Clear, intuitive controls
+- Results display
+
+If it's a DELIVERY/FOOD app:
+- Restaurant/menu selection page (app/menu/page.tsx)
+- Individual food item details (app/menu/[id]/page.tsx)
+- Shopping cart functionality (app/cart/page.tsx)
+- Checkout process (app/checkout/page.tsx)
+- User profile/account page (app/profile/page.tsx)
+
+If it's an E-COMMERCE app:
+- Product catalog with categories (app/products/page.tsx)
+- Individual product pages (app/products/[id]/page.tsx)  
+- Shopping cart (app/cart/page.tsx)
+- User account (app/account/page.tsx)
+- Checkout process (app/checkout/page.tsx)
+
+If it's a SOCIAL MEDIA app:
+- User feed/timeline (app/feed/page.tsx)
+- User profiles (app/profile/[id]/page.tsx)
+- Create post page (app/create/page.tsx)
+- Post details with comments (app/posts/[id]/page.tsx)
+
+ALWAYS INCLUDE:
+- Proper TypeScript interfaces
+- Realistic mock data when needed
+- Error handling and loading states
+- Responsive design with Tailwind classes
+- Clean, modern UI with good UX
+
+**REMEMBER: Use <new filename="app/page.tsx"> for the main page, not <edit> tags!**
+
+Return the complete application using <new> tags for initial creation.
+Focus on delivering exactly what was requested - simple for simple requests, complex for complex requests!"""
+
+    def validate_response(self, content: str, context: str = "edit") -> Tuple[bool, str]:
+        """
+        Enhanced validation of AI responses with structural code analysis.
+        
+        Returns:
+            Tuple of (is_valid, detailed_feedback)
+        """
+        issues = []
+        
+        # Check for required syntax tags based on context
+        if context == "create":
+            # For app creation, expect <new> tags
+            new_tags = re.findall(r'<new filename=\"([^\"]+)\">', content)
+            if not new_tags:
+                issues.append("No <new> tags found in response for app creation")
+        elif context == "edit_fallback":
+            # For fallback editing, expect <edit> tags
+            edit_tags = re.findall(r'<edit filename=\"([^\"]+)\"', content)
+            if not edit_tags:
+                issues.append("No <edit> tags found in response for fallback editing")
+        else:
+            # For regular editing, expect unified diff format
+            if '*** Begin Patch' not in content:
+                issues.append("No '*** Begin Patch' sentinel found - unified diff format required for edits")
+            if '*** End Patch' not in content:
+                issues.append("No '*** End Patch' sentinel found - unified diff format required for edits")
+                
+            # CRITICAL: Validate code structure in diff
+            if context == "edit":
+                structural_issues = self._validate_diff_code_structure(content)
+                issues.extend(structural_issues)
+        
+        # Show positive feedback for good practices
+        good_practices = []
+        
+        if context == "edit" and '*** Begin Patch' in content and '*** Update File:' in content:
+            good_practices.append("Uses proper unified diff format")
+        elif context == "create" and '<new filename=' in content:
+            good_practices.append("Uses appropriate file creation tags")
+        elif context == "edit_fallback" and '<edit filename=' in content:
+            good_practices.append("Uses appropriate line-based edit tags")
+            
+        if 'className=' in content and not re.search(r'\bcustom-\w+', content):
+            good_practices.append("Uses standard Tailwind classes")
+        
+        if good_practices:
+            print("📋 Good practices detected:")
+            for practice in good_practices:
+                print(f"   ✓ {practice}")
+        
+        is_valid = len(issues) == 0
+        
+        if not is_valid:
+            print("❌ Response validation failed:")
+            for issue in issues:
+                print(f"   • {issue}")
+        else:
+            print("✅ Response validation passed!")
+        
+        # Return detailed feedback
+        feedback = "\n".join(issues) if issues else "Response validation passed"
+        return is_valid, feedback
+        
+    def _validate_diff_code_structure(self, diff_content: str) -> List[str]:
+        """
+        Validate code structure in diff to catch common errors.
+        
+        Returns:
+            List of structural issues found
+        """
+        issues = []
+        
+        # Check for variable reference problems
+        variable_refs = re.findall(r'\+.*?(\w+)\.map\(', diff_content)
+        duplicate_interfaces = re.findall(r'\+\\s*interface\\s+(\w+)', diff_content)
+        duplicate_functions = re.findall(r'\+\\s*(?:function\\s+(\w+)|export\\s+default\\s+function\\s+(\w+))', diff_content)
+        
+        # Check for common patterns that indicate problems
+        if any('mockPosts.map' in line for line in diff_content.split('\n') if line.startswith('+')):
+            issues.append("CRITICAL: Uses 'mockPosts.map' but should use state variable (likely 'posts')")
+            
+        if any('+interface ' in line and 'interface ' in line for line in diff_content.split('\n')):
+            # Check if interface is being added when it might already exist
+            issues.append("WARNING: Adding interface - ensure it doesn't duplicate existing ones")
+            
+        # Check for malformed JSX in additions
+        added_lines = [line[1:] for line in diff_content.split('\n') if line.startswith('+')]
+        jsx_content = '\n'.join(added_lines)
+        
+        if '<' in jsx_content and '>' in jsx_content:
+            # Basic JSX validation
+            open_tags = jsx_content.count('<')
+            close_tags = jsx_content.count('>')
+            if abs(open_tags - close_tags) > 2:  # Allow some variance for partial diff context
+                issues.append("WARNING: Potential JSX structure issues in diff")
+        
+        return issues
+
+
+
+    def call_openai(self, messages: List[Dict], config: Dict) -> Optional[str]:
+        """Call OpenAI API."""
+        if not self.openai_client:
+            return None
+        
+        try:
+            response = self.openai_client.chat.completions.create(
+                model=config["model"],
+                messages=messages,
+                max_tokens=config["max_tokens"],
+                temperature=config["temperature"]
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"❌ OpenAI error: {str(e)}")
+            return None
+
+    def call_openrouter(self, messages: List[Dict], config: Dict) -> Optional[str]:
+        """Call OpenRouter API."""
+        if not self.openrouter_api_key:
+            return None
+        
+        try:
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {self.openrouter_api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/nextjs-master-builder",
+                "X-Title": "NextJS Master Builder"
+            }
+            
+            payload = {
+                "model": config["model"],
+                "messages": messages,
+                "max_tokens": config["max_tokens"],
+                "temperature": config["temperature"]
+            }
+            
+            response = requests.post(url, json=payload, headers=headers, timeout=60)
+            response.raise_for_status()
+            
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
+            
+        except Exception as e:
+            print(f"❌ OpenRouter error: {str(e)}")
+            return None
+
+    def generate_with_fallback(self, messages: List[Dict], context: str = "create") -> Optional[str]:
+        """Generate response with fallback across multiple LLM providers."""
+        print("🚀 Generating NextJS application with multi-LLM fallback...")
+        
+        for i, config in enumerate(self.llm_providers, 1):
+            try:
+                print(f"🤖 Trying {config['name']} ({i}/{len(self.llm_providers)})...")
+                
+                # Call the appropriate provider
+                if config["type"] == "openai" and self.openai_client:
+                    response = self.call_openai(messages, config)
+                elif config["type"] == "openrouter" and self.openrouter_api_key:
+                    response = self.call_openrouter(messages, config)
+                else:
+                    continue
+                
+                if response:
+                    # 🔍 DEBUG: Save and print the raw AI response
+                    import os
+                    import time
+                    
+                    # Save to debug file
+                    debug_dir = "debug_responses"
+                    os.makedirs(debug_dir, exist_ok=True)
+                    timestamp = int(time.time())
+                    debug_file = f"{debug_dir}/ai_response_{config['name'].replace(' ', '_')}_{timestamp}.txt"
+                    
+                    with open(debug_file, 'w', encoding='utf-8') as f:
+                        f.write(f"=== RAW AI RESPONSE FROM {config['name']} ===\n")
+                        f.write(f"Provider: {config['name']}\n")
+                        f.write(f"Model: {config['model']}\n")
+                        f.write(f"Context: {context}\n")
+                        f.write("=" * 50 + "\n")
+                        f.write(response)
+                        f.write("\n" + "=" * 50 + "\n")
+                        f.write("=== END RESPONSE ===\n")
+                    
+                    print(f"🔍 DEBUG: Raw AI response saved to {debug_file}")
+                    print("🔍 DEBUG: First 800 characters of AI response:")
+                    print("-" * 60)
+                    print(response[:800])
+                    print("-" * 60)
+                    if len(response) > 800:
+                        print(f"... (truncated, full response in {debug_file})")
+                    
+                    # Check for JSX issues in the raw response
+                    if 'return (' in response:
+                        jsx_samples = []
+                        lines = response.split('\n')
+                        for i, line in enumerate(lines):
+                            if 'return (' in line:
+                                # Get this line and next few lines to see the pattern
+                                start_idx = max(0, i-2)  # 2 lines before
+                                end_idx = min(len(lines), i+8)  # 6 lines after
+                                sample = '\n'.join(lines[start_idx:end_idx])
+                                jsx_samples.append(f"Found at line {i+1}:\n{sample}")
+                        
+                        if jsx_samples:
+                            print(f"🔍 FOUND {len(jsx_samples)} JSX RETURN STATEMENTS IN RAW RESPONSE:")
+                            for j, sample in enumerate(jsx_samples[:2]):  # Show first 2 samples
+                                print(f"Sample {j+1}:")
+                                print(sample)
+                                print("-" * 40)
+                    
+                    # Validate the response
+                    is_valid, validation_feedback = self.validate_response(response, context)
+                    
+                    if is_valid:
+                        print(f"✅ {config['name']} provided valid response!")
+                        return response
+                    else:
+                        print(f"❌ {config['name']} response validation failed:")
+                        print(f"   - {validation_feedback}")
+                        print("⏭️ Trying next provider...")
+                else:
+                    print(f"⚠️ {config['name']} returned empty response")
+                    
+            except Exception as e:
+                print(f"❌ Error with {config['name']}: {str(e)}")
+                continue
+        
+        print("❌ All LLM providers failed to generate valid response")
+        return None
+
+    def clean_generated_content(self, content):
+        """Clean the generated content by removing markdown code blocks."""
+        if not content:
+            return content
+        
+        # Remove markdown code blocks like ```tsx, ```javascript, ```typescript, etc.
+        pattern = r'^```[a-zA-Z]*\n(.*?)\n```$'
+        cleaned = re.sub(pattern, r'\1', content, flags=re.MULTILINE | re.DOTALL)
+        
+        # Also handle inline code blocks within our tags
+        cleaned = re.sub(r'```[a-zA-Z]*\n?', '', cleaned)
+        cleaned = re.sub(r'\n?```', '', cleaned)
+        
+        # Clean up any extra whitespace that might be left
+        cleaned = re.sub(r'\n\n\n+', '\n\n', cleaned)
+        
+        return cleaned.strip()
+
+    def generate_app(self, app_idea):
+        """Generate the NextJS app using multiple LLM providers with fallback."""
+        try:
+            print("🚀 Generating NextJS application with multi-LLM fallback...")
+            
+            messages = [
+                {"role": "system", "content": self.get_system_prompt()},
+                {"role": "user", "content": self.get_user_prompt(app_idea)}
+            ]
+            
+            return self.generate_with_fallback(messages, context="create")
+            
+        except Exception as e:
+            print(f"❌ Error generating app: {str(e)}")
+            return None
+
+    def get_next_version(self, base_filename="input"):
+        """Get the next version number for the output file."""
+        version = 1
+        while os.path.exists(f"{base_filename}_v{version}.txt"):
+            version += 1
+        return version
+
+    def save_to_file(self, content, app_idea):
+        """Save the generated content to a versioned file."""
+        version = self.get_next_version()
+        filename = f"input_v{version}.txt"
+        
+        # Add metadata header
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        header = f"""<!-- 
+Generated NextJS Application
+App Idea: {app_idea}
+Generated: {timestamp}
+Version: {version}
+Multi-LLM Builder with validation
+-->
+
+"""
+        
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(header + content)
+            
+            print(f"✅ Application saved to: {filename}")
+            return filename
+            
+        except Exception as e:
+            print(f"❌ Error saving file: {str(e)}")
+            return None
+
+    def build_app(self, app_idea):
+        """Main method to build the app from idea to file."""
+        print(f"🚀 Building NextJS app for: {app_idea}")
+        print("-" * 50)
+        
+        # Generate the app
+        generated_content = self.generate_app(app_idea)
+        
+        if not generated_content:
+            print("❌ Failed to generate application with all providers")
+            return None
+        
+        print("✅ Application generated successfully!")
+        
+        # Save to file
+        filename = self.save_to_file(generated_content, app_idea)
+        
+        if filename:
+            print(f"📁 File saved as: {filename}")
+            print(f"📊 Content length: {len(generated_content)} characters")
+            return filename
+        
+        return None
+
+    def build_and_run(self, auto_install_deps: bool = True) -> bool:
+        """
+        Build the app to verify changes work, with enhanced TypeScript error detection.
+        
+        Args:
+            auto_install_deps: Whether to automatically install dependencies
+            
+        Returns:
+            True if build succeeds, False otherwise
+        """
+        import subprocess
+        import os
+        import re
+        
+        app_path = self.get_app_path()
+        
+        try:
+            # Change to app directory
+            original_dir = os.getcwd()
+            os.chdir(app_path)
+            
+            # Install dependencies if requested
+            if auto_install_deps:
+                print("📦 Installing dependencies...")
+                result = subprocess.run(['npm', 'install'], 
+                                      capture_output=True, text=True, timeout=120)
+                if result.returncode != 0:
+                    print(f"⚠️ npm install warnings: {result.stderr}")
+            
+            # Try to build the app with enhanced error capture
+            print("🔨 Building NextJS app...")
+            result = subprocess.run(['npm', 'run', 'build'], 
+                                  capture_output=True, text=True, timeout=300)
+            
+            if result.returncode == 0:
+                print("✅ Build successful!")
+                return True
+            else:
+                print("❌ Build failed:")
+                
+                # Enhanced error parsing for TypeScript issues
+                error_output = result.stdout + result.stderr
+                self._parse_and_display_typescript_errors(error_output)
+                return False
+                
+        except subprocess.TimeoutExpired:
+            print("⏰ Build timed out")
+            return False
+        except FileNotFoundError:
+            print("❌ npm not found - please install Node.js")
+            return False
+        except Exception as e:
+            print(f"❌ Build error: {str(e)}")
+            return False
+        finally:
+            # Return to original directory
+            os.chdir(original_dir)
+    
+    def _parse_and_display_typescript_errors(self, error_output: str):
+        """Parse and display TypeScript errors in a structured way."""
+        import re
+        
+        print("📋 TypeScript Error Analysis:")
+        print("=" * 50)
+        
+        # Parse TypeScript errors
+        ts_error_pattern = r'\./(.*?):(\d+):(\d+)\s*\n\s*Type error:\s*(.*?)(?=\n\n|\nCompiled|\n\s*$)'
+        ts_errors = re.findall(ts_error_pattern, error_output, re.DOTALL)
+        
+        if ts_errors:
+            print(f"🚨 Found {len(ts_errors)} TypeScript error(s):")
+            for i, (file_path, line, col, error_msg) in enumerate(ts_errors, 1):
+                print(f"   {i}. {file_path}:{line}:{col}")
+                print(f"      📝 {error_msg.strip()}")
+                
+                # Provide specific guidance for common errors
+                if "does not exist on type 'never'" in error_msg:
+                    print(f"      💡 Tip: Check if interfaces/types are properly defined and imported")
+                elif "interface" in error_msg.lower():
+                    print(f"      💡 Tip: Ensure interfaces are defined outside function components")
+                elif "useState" in error_msg:
+                    print(f"      💡 Tip: Check useState type annotations")
+                print()
+        
+        # Parse syntax errors
+        syntax_error_pattern = r'Expected.*(?:;|,|\}|\)|>)'
+        syntax_errors = re.findall(syntax_error_pattern, error_output)
+        
+        if syntax_errors:
+            print(f"🔍 Found {len(syntax_errors)} syntax error(s):")
+            for i, error in enumerate(syntax_errors, 1):
+                print(f"   {i}. {error}")
+                
+        # Parse specific structural issues
+        if "interface" in error_output and "function" in error_output:
+            print("🏗️  Structural Issue Detected:")
+            print("   💡 Interface may be defined inside a function component")
+            print("   💡 Move interface definitions to the top level of the file")
+            
+        print("=" * 50)
+
+    def get_edit_prompt(self, app_idea, app_structure):
+        """Create a prompt for editing an existing app using unified diff format."""
+        return f"""You are editing an existing NextJS application. Here is the current app structure and content:
+
+{app_structure}
+
+User wants to make the following changes:
+{app_idea}
+
+🚨 CRITICAL DIFF GENERATION RULES 🚨
+
+You MUST respond with a UNIFIED DIFF in this EXACT format:
+
+*** Begin Patch
+*** Update File: path/to/file.tsx
+@@ -old_start,old_count +new_start,new_count @@ optional_context
+- old line to remove
++ new line to add
+ unchanged context line
+*** End Patch
+
+KEY REQUIREMENTS:
+1. Use ONLY the unified diff format shown above
+2. Include 2-3 lines of context before and after changes for accurate matching
+3. Use proper +/- prefixes for added/removed lines
+4. Use space prefix for unchanged context lines
+5. Multiple files = multiple "*** Update File:" sections in ONE patch
+6. NO line-based <edit> tags - ONLY unified diffs
+7. Context lines must EXACTLY match existing file content
+
+🎯 CRITICAL CODE ANALYSIS REQUIREMENTS:
+- **USE EXISTING VARIABLES**: Reference only variables/functions shown in "Variables:" and "State Variables:" sections
+- **NO DUPLICATE DECLARATIONS**: Don't redeclare interfaces or components that already exist
+- **MAINTAIN STRUCTURE**: Keep existing component structure and just add/modify what's needed
+- **VARIABLE CONSISTENCY**: If you see `const [posts, setPosts] = useState`, use `posts.map()` NOT `mockPosts.map()`
+
+EXAMPLE:
+*** Begin Patch
+*** Update File: app/page.tsx
+@@ -45,7 +45,8 @@ export default function HomePage() {{
+   const [isLoading, setIsLoading] = useState(false);
+   
+   return (
+-    <div className="container mx-auto p-8">
++    <div className="container mx-auto p-8 bg-gray-50">
++      <header className="mb-8">
+      <h1 className="text-3xl font-bold mb-6">Welcome</h1>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+*** End Patch
+
+This diff-based approach ensures:
+✅ Context-aware matching (no line number issues)
+✅ Fuzzy matching handles small file changes
+✅ Transactional safety with automatic rollback
+✅ No overlapping edit corruption
+✅ Standard format used by Git and professional tools
+
+Generate a unified diff that implements the requested changes with proper context matching and variable consistency."""
+
+    def _ensure_indexer(self, app_directory: str):
+        """Ensure indexer is initialized for the given app directory."""
+        if self._indexer is None or self._indexer_app_path != app_directory:
+            print(f"🏗️ Initializing semantic indexer for: {app_directory}")
+            self._indexer = CodebaseIndexer(app_directory)
+            self._indexer_app_path = app_directory
+            
+            # Check if we need to build initial index
+            stats = self._indexer.get_stats()
+            if stats['storage']['total_chunks'] == 0:
+                print("🔄 Building initial semantic index...")
+                self._indexer.index_project()
+            else:
+                # Do a smart update to catch any changes
+                if hasattr(self._indexer, 'smart_update'):
+                    self._indexer.smart_update()
+                print(f"📚 Using existing index with {stats['storage']['total_chunks']} chunks")
+
+    def analyze_app_structure_enhanced(self, app_directory: str) -> str:
+        """
+        ENHANCED SEMANTIC CONTEXT ANALYSIS - Replaces manual file analysis with AI-powered indexing.
+        
+        This method now uses vector indexing and semantic search instead of manual file reading,
+        providing more relevant and focused context for LLM prompts.
+        
+        Args:
+            app_directory: Path to the app directory
+            
+        Returns:
+            Semantically relevant context based on the current editing request
+        """
+        from pathlib import Path
+        
+        app_path = Path(app_directory)
+        
+        if not app_path.exists():
+            raise FileNotFoundError(f"App directory does not exist: {app_directory}")
+        
+        # Initialize the semantic indexer
+        self._ensure_indexer(app_directory)
+        
+        # For now, return a general context since we don't have the specific request
+        # This will be enhanced when we have the actual user request
+        context_info = []
+        context_info.append(f"🏗️ SEMANTIC CODEBASE ANALYSIS")
+        context_info.append("=" * 60)
+        context_info.append(f"📁 Project: {app_directory}")
+        
+        # Get index statistics
+        stats = self._indexer.get_stats()
+        context_info.append(f"📊 Indexed: {stats['storage']['total_chunks']} code chunks")
+        context_info.append(f"📈 File types: {dict(stats['storage']['file_types'])}")
+        context_info.append(f"🧩 Chunk types: {dict(stats['storage']['chunk_types'])}")
+        context_info.append("=" * 60)
+        
+        # Get a general overview of the app structure
+        overview_chunks = self._indexer.search_code("NextJS app structure layout components", max_results=15)
+        
+        if overview_chunks:
+            context_info.append("🔍 KEY APP COMPONENTS:")
+            context_info.append("-" * 40)
+            
+            for i, chunk in enumerate(overview_chunks[:10], 1):
+                context_info.append(f"{i}. {chunk['file_path']} ({chunk['chunk_type']})")
+                if chunk['metadata']['component_name']:
+                    context_info.append(f"   Component: {chunk['metadata']['component_name']}")
+                elif chunk['metadata']['function_name']:
+                    context_info.append(f"   Function: {chunk['metadata']['function_name']}")
+        
+        context_info.append("\n" + "=" * 60)
+        context_info.append("🚀 SEMANTIC INDEXING ACTIVE - Context will be provided based on specific requests")
+        context_info.append("💡 This replaces manual file analysis with AI-powered relevant context retrieval")
+        context_info.append("=" * 60)
+        
+        return '\n'.join(context_info)
+    
+    def get_semantic_context_for_request(self, user_request: str, app_directory: str, 
+                                       current_file: str = None, recent_files: List[str] = None) -> str:
+        """
+        Get context by directly reading key files with enhanced structural analysis.
+        
+        This replaces the complex indexing approach with simple direct file reading
+        plus code structure analysis for better AI understanding.
+        """
+        print(f"📁 Getting direct file context from: {app_directory}")
+        
+        context_parts = []
+        context_parts.append("CURRENT APP FILES FOR EDITING:")
+        context_parts.append("=" * 60)
+        context_parts.append(f"User Request: {user_request}")
+        context_parts.append("=" * 60)
+        
+        from pathlib import Path
+        import re
+        app_path = Path(app_directory)
+        
+        # Read the key files directly with structural analysis
+        key_files = ["app/page.tsx", "app/layout.tsx", "app/globals.css", "package.json"]
+        files_found = 0
+        
+        for file_path in key_files:
+            full_path = app_path / file_path
+            if full_path.exists():
+                try:
+                    content = full_path.read_text()
+                    context_parts.append(f"\n📄 FILE: {file_path}")
+                    context_parts.append("-" * 40)
+                    
+                    # Add structural analysis for TypeScript/JavaScript files
+                    if file_path.endswith(('.tsx', '.ts', '.js', '.jsx')):
+                        context_parts.append("🏗️ CODE STRUCTURE:")
+                        
+                        # Extract interfaces
+                        interfaces = re.findall(r'interface\s+(\w+)\s*{[^}]*}', content, re.DOTALL)
+                        if interfaces:
+                            context_parts.append(f"  📋 Interfaces: {', '.join(interfaces)}")
+                        
+                        # Extract variable declarations
+                        variables = re.findall(r'(?:const|let|var)\s+(\w+)\s*[=:]', content)
+                        if variables:
+                            context_parts.append(f"  📦 Variables: {', '.join(set(variables))}")
+                        
+                        # Extract function/component names
+                        functions = re.findall(r'(?:function\s+(\w+)|export\s+default\s+function\s+(\w+)|const\s+(\w+)\s*=.*=>)', content)
+                        func_names = [name for group in functions for name in group if name]
+                        if func_names:
+                            context_parts.append(f"  ⚙️ Functions/Components: {', '.join(set(func_names))}")
+                        
+                        # Extract useState declarations
+                        usestate_vars = re.findall(r'const\s+\[(\w+),\s*set\w+\]\s*=\s*useState', content)
+                        if usestate_vars:
+                            context_parts.append(f"  🎛️ State Variables: {', '.join(usestate_vars)}")
+                    
+                    context_parts.append("\n📝 FULL CONTENT:")
+                    context_parts.append(content)
+                    files_found += 1
+                    
+                except Exception as e:
+                    context_parts.append(f"❌ Error reading {file_path}: {str(e)}")
+        
+        if files_found == 0:
+            context_parts.append("❌ No key files found in the app directory")
+            return ""
+        
+        print(f"✅ Retrieved {files_found} files directly with structural analysis")
+        return "\n".join(context_parts)
+
+    def analyze_file_with_line_count(self, file_path: str, relative_path: str) -> str:
+        """
+        Analyze a file and return its content with line numbers and total count.
+        
+        Args:
+            file_path: Full path to the file
+            relative_path: Relative path for display
+            
+        Returns:
+            Formatted string with line numbers and total count
+        """
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            # Create formatted content with line numbers
+            content_lines = []
+            content_lines.append(f"\n📄 FILE: {relative_path} ({len(lines)} lines)")
+            content_lines.append("-" * 50)
+            
+            for i, line in enumerate(lines, 1):
+                # Remove trailing newline for display but keep track of actual content
+                display_line = line.rstrip('\n')
+                content_lines.append(f"{i:3d}: {display_line}")
+            
+            content_lines.append(f"\n[END OF FILE - Total: {len(lines)} lines]")
+            
+            return '\n'.join(content_lines)
+            
+        except Exception as e:
+            return f"\n📄 FILE: {relative_path} (ERROR reading file: {e})"
+    
+    def get_app_path(self):
+        """Get the full path to the current app directory."""
+        if not hasattr(self, 'app_name') or not self.app_name:
+            raise ValueError("App name not set")
+        if not hasattr(self, 'apps_dir') or not self.apps_dir:
+            raise ValueError("Apps directory not set")
+        return str(self.apps_dir / self.app_name)
+    
+    def edit_app(self, app_idea):
+        """
+        Edit an existing NextJS app using diff-based editing for safe, context-aware modifications.
+        
+        This method:
+        1. Analyzes current app structure and content
+        2. Generates a unified diff via AI
+        3. Applies the diff using fuzzy context matching
+        4. Handles build errors with automatic fixes
+        """
+        from .diff_builder import DiffBuilder
+        
+        print(f"📝 Editing existing app: {self.app_name}")
+        print(f"🎯 Requested changes: {app_idea}")
+        
+        # Get semantically relevant context for this edit request
+        semantic_context = self.get_semantic_context_for_request(
+            user_request=app_idea, 
+            app_directory=self.get_app_path()
+        )
+        if not semantic_context:
+            print("❌ Failed to get semantic context for edit request")
+            return False
+        
+        # Generate edit response using diff format
+        print("🤖 Generating unified diff with semantic context...")
+        is_valid, response = self.make_openai_request(
+            self.get_edit_prompt(app_idea, semantic_context),
+            context="edit"
+        )
+        
+        if not is_valid:
+            print("❌ Failed to generate valid diff")
+            return False
+        
+        # Save the diff to a temporary file
+        import tempfile
+        import os
+        
+        timestamp = int(time.time())
+        diff_file = os.path.join("inputs", self.app_name, f"diff_{timestamp}.patch")
+        
+        # Ensure inputs directory exists
+        os.makedirs(os.path.dirname(diff_file), exist_ok=True)
+        
+        with open(diff_file, 'w') as f:
+            f.write(response)
+        
+        print(f"💾 Saved diff to: {diff_file}")
+        
+        # Apply the diff
+        print("🔧 Applying unified diff...")
+        diff_builder = DiffBuilder(diff_file, self.get_app_path())
+        success = diff_builder.build()
+        
+        if not success:
+            print("❌ Failed to apply diff - attempting recovery...")
+            # Try to fix any issues and retry
+            return self._handle_diff_failure(app_idea, semantic_context)
+        
+        print("✅ Diff applied successfully!")
+        
+        # Build and run to verify changes work
+        print("🔨 Building app to verify changes...")
+        build_success = self.build_and_run(auto_install_deps=True)
+        
+        if build_success:
+            print("🎉 App edited successfully and builds correctly!")
+            return True
+        else:
+            print("⚠️ App edited but has build errors - attempting automatic fixes...")
+            return self.auto_fix_build_errors()
+    
+    def _handle_diff_failure(self, app_idea, semantic_context):
+        """Handle diff application failure with fallback strategies."""
+        print("🩹 Diff application failed - trying recovery strategies...")
+        
+        # Strategy 1: Generate a simpler diff with more context
+        print("📋 Strategy 1: Generating diff with enhanced semantic context...")
+        enhanced_prompt = self.get_edit_prompt(app_idea, semantic_context) + """
+
+⚠️ ENHANCED CONTEXT REQUIREMENTS ⚠️
+The previous diff failed to apply. Please generate a new diff with:
+1. More context lines (4-5 lines before and after changes)
+2. Exact matching of existing content
+3. Smaller, more targeted changes
+4. Extra care with whitespace and indentation matching
+
+Focus on making minimal, surgical changes that are easy to apply."""
+
+        is_valid, response = self.make_openai_request(enhanced_prompt, context="edit")
+        
+        if is_valid:
+            # Try applying the enhanced diff
+            import tempfile
+            import os
+            
+            timestamp = int(time.time())
+            diff_file = os.path.join("inputs", self.app_name, f"diff_recovery_{timestamp}.patch")
+            
+            with open(diff_file, 'w') as f:
+                f.write(response)
+                
+            from .diff_builder import DiffBuilder
+            diff_builder = DiffBuilder(diff_file, self.get_app_path())
+            success = diff_builder.build()
+            
+            if success:
+                print("✅ Recovery diff applied successfully!")
+                return True
+        
+        # Strategy 2: Fall back to line-based editing for critical fixes
+        print("📋 Strategy 2: Falling back to legacy line-based editing...")
+        return self._fallback_to_line_based_edit(app_idea, semantic_context)
+    
+    def _fallback_to_line_based_edit(self, app_idea, semantic_context):
+        """Fallback to the old line-based editing system as last resort."""
+        from .code_builder import CodeBuilder
+        
+        print("🔄 Using legacy line-based editing system...")
+        
+        # Generate line-based edit response
+        legacy_prompt = """You are editing an existing NextJS application. Here is the semantic context:
+
+""" + semantic_context + """
+
+User wants to make the following changes:
+""" + app_idea + """
+
+FALLBACK MODE - USE LINE-BASED EDITS:
+Please use the legacy <edit filename="..." start_line="N" end_line="N"> format.
+Be extremely careful with line numbers and avoid overlapping edits.
+
+Make minimal, targeted changes to implement the requested features."""
+
+        is_valid, response = self.make_openai_request(legacy_prompt, context="edit_fallback")  # Use special context for edit fallback
+        
+        if not is_valid:
+            print("❌ Failed to generate fallback response")
+            return False
+        
+        # Save and apply using legacy system
+        timestamp = int(time.time())
+        edit_file = os.path.join("inputs", self.app_name, f"fallback_{timestamp}.txt")
+        
+        with open(edit_file, 'w') as f:
+            f.write(response)
+        
+        code_builder = CodeBuilder(edit_file, self.get_app_path())
+        return code_builder.build()
+
+    def auto_fix_build_errors(self):
+        """Automatically fix build errors using diff-based approach with enhanced error handling."""
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            print(f"🔧 Auto-fix attempt {attempt + 1}/{max_attempts}")
+            
+            # Parse build errors with enhanced extraction
+            build_errors = self.parse_build_errors()
+            if not build_errors:
+                print("✅ No build errors found!")
+                return True
+            
+            print(f"🚨 Found {len(build_errors)} build errors:")
+            for i, error in enumerate(build_errors, 1):
+                print(f"   {i}. {error}")
+            
+            # Check for infrastructure errors first
+            infrastructure_errors = self.detect_infrastructure_errors(build_errors)
+            if infrastructure_errors:
+                print("🔧 Detected infrastructure errors - applying automatic fixes...")
+                if self.fix_infrastructure_errors(infrastructure_errors):
+                    # Try building again after infrastructure fixes
+                    if self.build_and_run(auto_install_deps=False):
+                        print("✅ Infrastructure fixes resolved the build errors!")
+                        return True
+                    else:
+                        print("📋 Infrastructure fixed, but other errors remain...")
+                        continue
+            
+            # Get semantic context for error fixing
+            error_context_query = f"build errors: {'; '.join(build_errors[:3])}"  # Use first few errors as query
+            app_structure = self.get_semantic_context_for_request(
+                user_request=error_context_query,
+                app_directory=self.get_app_path()
+            )
+            if not app_structure:
+                print("❌ Failed to get semantic context for error fixing")
+                return False
+            
+            # Extract error files content for better context
+            error_files_content = self.extract_error_files_content(build_errors, app_structure)
+            
+            # Build comprehensive error context
+            error_context = """BUILD ERRORS THAT NEED TO BE FIXED:
+""" + '\n'.join([f"ERROR {i+1}: {error}" for i, error in enumerate(build_errors)])
+            
+            if error_files_content:
+                error_context += """
+
+SPECIFIC FILES WITH ERRORS:
+""" + error_files_content
+            
+            # Generate fix using diff format
+            print("🤖 Generating fix diff...")
+            is_valid, response = self.make_openai_request(
+                self.get_build_fix_prompt(app_structure, error_context),
+                context="edit"
+            )
+            
+            if not is_valid:
+                print(f"❌ Failed to generate valid fix diff (attempt {attempt + 1})")
+                continue
+            
+            # Save and apply the fix diff
+            timestamp = int(time.time())
+            fix_file = os.path.join("inputs", self.app_name, f"autofix_{timestamp}.patch")
+            
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(fix_file), exist_ok=True)
+            
+            with open(fix_file, 'w') as f:
+                f.write(response)
+            
+            print(f"💾 Saved fix diff to: {fix_file}")
+            
+            # Apply the fix diff
+            from .diff_builder import DiffBuilder
+            diff_builder = DiffBuilder(fix_file, self.get_app_path())
+            fix_success = diff_builder.build()
+            
+            if not fix_success:
+                print(f"❌ Failed to apply fix diff (attempt {attempt + 1})")
+                # Try fallback approach for this attempt
+                if self._try_fallback_fix(build_errors, app_structure, error_context):
+                    print("✅ Fallback fix applied successfully!")
+                else:
+                    print("❌ Fallback fix also failed")
+                continue
+            
+            print(f"✅ Fix diff applied successfully (attempt {attempt + 1})")
+            
+            # Test the build again
+            print("🔨 Testing build after fixes...")
+            if self.build_and_run(auto_install_deps=False):
+                print("🎉 Build errors fixed successfully!")
+                return True
+            else:
+                print(f"⚠️ Some errors remain after attempt {attempt + 1}")
+        
+        print("💥 Failed to fix build errors after maximum attempts")
+        return False
+    
+    def _try_fallback_fix(self, build_errors, semantic_context, error_context):
+        """Try a fallback fix using the legacy line-based system."""
+        print("🔄 Attempting fallback fix with legacy system...")
+        
+        from .code_builder import CodeBuilder
+        
+        # Generate legacy fix prompt
+        legacy_fix_prompt = """You are fixing build errors in an existing NextJS application. Here is the semantic context:
+
+""" + semantic_context + """
+
+""" + error_context + """
+
+FALLBACK MODE - USE LINE-BASED EDITS:
+Use the legacy <edit filename="..." start_line="N" end_line="N"> format.
+Make minimal, surgical fixes to resolve the exact errors shown above.
+Be extremely careful with line numbers.
+
+Focus on fixing:
+- Syntax errors (missing commas, brackets, quotes)
+- JSX return statement issues
+- Import/export problems
+- Type errors"""
+
+        is_valid, response = self.make_openai_request(legacy_fix_prompt, context="create")
+        
+        if not is_valid:
+            return False
+        
+        # Apply using legacy system
+        timestamp = int(time.time())
+        fallback_file = os.path.join("inputs", self.app_name, f"fallback_fix_{timestamp}.txt")
+        
+        with open(fallback_file, 'w') as f:
+            f.write(response)
+        
+        code_builder = CodeBuilder(fallback_file, self.get_app_path())
+        return code_builder.build()
+
+    def make_openai_request(self, prompt: str, context: str = "create") -> Tuple[bool, str]:
+        """
+        Make an AI request and return validation result and response.
+        
+        Args:
+            prompt: The prompt to send to the AI
+            context: Context for validation ("create" or "edit")
+            
+        Returns:
+            Tuple of (is_valid, response)
+        """
+        try:
+            messages = [
+                {"role": "system", "content": self.get_system_prompt()},
+                {"role": "user", "content": prompt}
+            ]
+            
+            response = self.generate_with_fallback(messages, context=context)
+            if not response:
+                return False, ""
+            
+            # 🔍 DEBUG: Save and print the raw AI response
+            import os
+            import time
+            
+            # Save to debug file
+            debug_dir = "debug_responses"
+            os.makedirs(debug_dir, exist_ok=True)
+            timestamp = int(time.time())
+            debug_file = f"{debug_dir}/ai_response_{timestamp}.txt"
+            
+            with open(debug_file, 'w', encoding='utf-8') as f:
+                f.write("=== RAW AI RESPONSE ===\n")
+                f.write(response)
+                f.write("\n=== END RESPONSE ===\n")
+            
+            print(f"🔍 DEBUG: Raw AI response saved to {debug_file}")
+            print("🔍 DEBUG: First 500 characters of AI response:")
+            print("-" * 50)
+            print(response[:500])
+            print("-" * 50)
+            if len(response) > 500:
+                print(f"... (truncated, full response in {debug_file})")
+            
+            # Check for JSX issues in the raw response
+            if 'return (' in response and '}>' in response:
+                jsx_samples = []
+                lines = response.split('\n')
+                for i, line in enumerate(lines):
+                    if 'return (' in line:
+                        # Get this line and next few lines to see the pattern
+                        sample = '\n'.join(lines[i:i+10])
+                        jsx_samples.append(f"Line {i+1}: {sample}")
+                
+                if jsx_samples:
+                    print("🚨 POTENTIAL JSX ISSUES DETECTED IN RAW RESPONSE:")
+                    for sample in jsx_samples[:3]:  # Show first 3 samples
+                        print(sample)
+                        print("-" * 30)
+            
+            # Validate the response
+            is_valid, validation_feedback = self.validate_response(response, context)
+            
+            if not is_valid:
+                print(f"❌ Response validation failed: {validation_feedback}")
+                print(f"🔍 Full response saved to {debug_file} for analysis")
+                return False, response
+            
+            return True, response
+            
+        except Exception as e:
+            print(f"❌ Error making AI request: {str(e)}")
+            return False, ""
+
+
+# Backward compatibility alias
+NextJSAppBuilder = MultiLLMAppBuilder
