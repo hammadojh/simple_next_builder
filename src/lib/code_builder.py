@@ -514,6 +514,29 @@ class CodeBuilder:
         """
         file_path = self.output_dir / filename
         
+        # 🖨️ ENHANCED FILE CREATION OUTPUT
+        print("\n" + "=" * 60)
+        print(f"📄 CREATING FILE: {filename}")
+        print("=" * 60)
+        
+        # Show file content preview (first 10 lines)
+        content_lines = content.split('\n')
+        preview_lines = content_lines[:10]
+        
+        print("📝 FILE CONTENT PREVIEW:")
+        print("-" * 40)
+        for i, line in enumerate(preview_lines, 1):
+            # Truncate very long lines for readability
+            display_line = line[:80] + "..." if len(line) > 80 else line
+            print(f"{i:3}: {display_line}")
+        
+        if len(content_lines) > 10:
+            print(f"... ({len(content_lines) - 10} more lines)")
+        
+        print("-" * 40)
+        print(f"📊 FILE STATS: {len(content_lines)} lines, {len(content)} characters")
+        print("=" * 60)
+        
         # Validate configuration files before creating them
         validation_errors = self.validate_edit_content(filename, content)
         if validation_errors:
@@ -535,7 +558,7 @@ class CodeBuilder:
         with open(file_path, 'w', encoding='utf-8') as f:
             f.write(content)
             
-        print(f"✓ Created: {file_path}")
+        print(f"✅ SUCCESSFULLY CREATED: {file_path}")
         
         # Additional post-creation validation for critical files
         if filename in ['postcss.config.js', 'tailwind.config.js'] and validation_errors:
@@ -1038,18 +1061,45 @@ class CodeBuilder:
         if not operations:
             print("❌ No operations to perform")
             return False
+        
+        # 🖨️ SHOW PREVIEW OF ALL FILES TO BE CREATED/EDITED
+        print("\n" + "📋" * 60)
+        print("📋 FILE OPERATIONS PREVIEW:")
+        print("📋" * 60)
+        
+        new_files = [op for op in operations if op[2] is None]
+        edit_files = [op for op in operations if op[2] is not None]
+        
+        if new_files:
+            print(f"\n📄 FILES TO CREATE ({len(new_files)}):")
+            for i, (filename, content, _) in enumerate(new_files, 1):
+                lines = len(content.split('\n'))
+                chars = len(content)
+                print(f"  {i:2}. {filename:<40} ({lines} lines, {chars} chars)")
+        
+        if edit_files:
+            print(f"\n✏️ FILES TO EDIT ({len(edit_files)}):")
+            for i, (filename, content, line_range) in enumerate(edit_files, 1):
+                start, end = line_range
+                print(f"  {i:2}. {filename:<40} (lines {start}-{end})")
+        
+        print("\n📋" + "📋" * 59)
+        print("🚀 STARTING FILE OPERATIONS...")
+        print("📋" + "📋" * 59)
             
         # Create the output directory if it doesn't exist
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
         # Apply operations using improved sequential processing
-        print(f"🔨 Processing {len(operations)} operations...")
+        print(f"\n🔨 Processing {len(operations)} operations...")
         new_files_count, edited_files_count = self.apply_edits_sequentially(operations)
                 
         print()
+        print("🎊" * 80)
         print(f"✅ Successfully processed {len(operations)} operations:")
         print(f"   📄 Created {new_files_count} new files")
         print(f"   ✏️  Edited {edited_files_count} existing files")
+        print("🎊" * 80)
         
         return True  # Return success status
 

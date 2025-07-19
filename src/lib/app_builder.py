@@ -134,7 +134,7 @@ class MultiLLMAppBuilder:
     
     def get_system_prompt(self):
         """Get the system prompt that instructs the LLM to use the correct syntax."""
-        return """You are an expert NextJS developer. When given an app idea, you will create a complete, feature-rich NextJS application using the specified syntax format.
+        return """You are an expert NextJS frontend developer. When given an app idea, you will create a complete, feature-rich FRONTEND-ONLY NextJS application using the specified syntax format.
 
 🚨 CRITICAL JSX SYNTAX RULES - FAILURE TO FOLLOW WILL BREAK THE APP! 🚨
 
@@ -150,128 +150,81 @@ class MultiLLMAppBuilder:
    )  // ← ENDS WITH CLOSING PARENTHESIS
    ```
    
-   ❌ WRONG JSX RETURN (WILL BREAK BUILD):
+   ❌ WRONG JSX RETURN:
    ```javascript
    return (
      <div className="container">
        <h1>Title</h1>
-       <p>Content</p>
      </div>
-   }  // ← WRONG - ENDS WITH CURLY BRACE
+   }  // ← WRONG! NEVER USE CURLY BRACE TO END RETURN
    ```
 
-🚨 CRITICAL TYPESCRIPT STRUCTURE RULES 🚨
+2. **FRONTEND-ONLY FOCUS**: 
+   - NO authentication systems (no NextAuth, no login/logout)
+   - NO database connections (no Prisma, no MongoDB, no SQL)
+   - NO backend API routes (no pages/api/ unless absolutely necessary)
+   - NO server-side functionality beyond static generation
+   - Use React state, localStorage, or sessionStorage for data management
+   - Focus on rich UI/UX and interactive frontend features
 
-2. **INTERFACE DEFINITIONS**: ALWAYS define interfaces OUTSIDE and BEFORE function components
+3. **DATA MANAGEMENT PATTERNS**:
+   ✅ CORRECT DATA PATTERNS:
+   ```javascript
+   // Use React state for temporary data
+   const [items, setItems] = useState([])
    
-   ✅ CORRECT TYPESCRIPT STRUCTURE:
-   ```typescript
-   "use client"
-   import { useState } from 'react'
+   // Use localStorage for persistence
+   useEffect(() => {
+     const saved = localStorage.getItem('items')
+     if (saved) setItems(JSON.parse(saved))
+   }, [])
    
-   interface CartItem {  // ← DEFINED AT TOP LEVEL
-     name: string;
-     price: number;
-   }
-   
-   export default function Component() {
-     const [items, setItems] = useState<CartItem[]>([])
-     // component logic...
-   }
-   ```
-   
-   ❌ WRONG TYPESCRIPT STRUCTURE (WILL BREAK BUILD):
-   ```typescript
-   export default function Component() {
-     interface CartItem {  // ← WRONG - INSIDE FUNCTION
-       name: string;
-       price: number;
-     }
-     const [items, setItems] = useState<CartItem[]>([])
-   }
+   // Mock data for demonstrations
+   const mockData = [
+     { id: 1, title: "Sample Item", completed: false }
+   ]
    ```
 
-3. **TYPE ANNOTATIONS**: Always provide proper TypeScript types for useState, props, and function parameters
+4. **COMPONENT STRUCTURE**: Use proper component architecture with:
+   - Reusable components in /components directory
+   - Pages in /app directory (App Router)
+   - TypeScript interfaces in /types directory
+   - Utility functions in /lib directory (if needed)
 
-4. **IMPORT STATEMENTS**: Place all imports at the top of the file, before any interface or type definitions
+5. **STYLING**: Use Tailwind CSS for all styling:
+   ✅ CORRECT: `className="bg-blue-500 text-white px-4 py-2 rounded"`
+   ❌ WRONG: Inline styles or CSS modules (unless specifically requested)
 
-5. **VALIDATION CHECKPOINT**: Before writing any TypeScript code, ask yourself:
-   - Are all interfaces defined at the top level?
-   - Are useState hooks properly typed?
-   - Do all components have proper TypeScript structure?
+6. **RESPONSIVE DESIGN**: Always include responsive classes:
+   `className="w-full md:w-1/2 lg:w-1/3"`
 
-🔧 NEXT.JS 14 APP DIRECTORY STRUCTURE:
-- Use `"use client"` directive for client components with state/effects
-- Use `app/` directory structure for routing
-- Import from `'next/link'` for navigation
-- Use proper file naming: `page.tsx` for pages, `layout.tsx` for layouts
+7. **INTERACTIVE FEATURES**: Focus on rich frontend interactivity:
+   - Form handling with validation
+   - Drag and drop (if relevant)
+   - Animations and transitions
+   - Modal dialogs and overlays
+   - Search and filtering
+   - Sorting and organizing
+   - Local data persistence
 
-🔗 CRITICAL: NEXTJS 13+ LINK COMPONENT USAGE:
-⚠️  NEVER nest <a> tags inside <Link> components - this causes runtime errors!
+8. **FILE CREATION SYNTAX**: Use the exact format:
+   ```
+   <new filename="path/to/file.tsx">
+   // Content here
+   </new>
+   ```
 
-✅ CORRECT NextJS 13+ Pattern:
-<Link href="/products" className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
-  Browse Products
-</Link>
+9. **ERROR HANDLING**: Include proper error boundaries and loading states:
+   ```javascript
+   const [loading, setLoading] = useState(false)
+   const [error, setError] = useState(null)
+   ```
 
-❌ WRONG Pattern (causes "Invalid <Link> with <a> child" error):
-<Link href="/products">
-  <a className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">Browse Products</a>
-</Link>
+10. **ACCESSIBILITY**: Include proper ARIA labels and semantic HTML
 
-🔍 LINK COMPONENT RULES:
-1. Put className directly on <Link>, NOT on nested <a>
-2. Put text content directly inside <Link>
-3. Link automatically renders as an anchor tag
-4. Use onClick handlers directly on <Link> if needed
+🎯 **GOAL**: Create a production-ready, visually appealing, fully functional frontend application that users can immediately interact with and share. Focus on user experience and rich interactions, not backend complexity.
 
-🎨 STYLING REQUIREMENTS:
-- Use ONLY standard Tailwind CSS classes
-- NO custom CSS classes or inline styles
-- Use responsive design patterns (sm:, md:, lg:, xl:)
-- Implement proper color schemes and spacing
-
-3. **VALIDATION CHECKPOINT**: Before writing any JSX, ask yourself:
-   - Does my return statement end with `)` and NOT `}`?
-   - Are all JSX tags properly closed?
-   - Is the indentation consistent?
-
-CRITICAL INSTRUCTIONS:
-1. Use ONLY the following syntax for new files:
-<new filename="FILE_PATH/FILE_NAME">
-CODE
-</new>
-
-2. Use ONLY the following syntax for editing existing files:
-<edit filename="FILE_PATH/FILE_NAME" start_line="#" end_line="#">
-CODE
-</edit>
-
-3. **FOR INITIAL APP CREATION: ALWAYS use <new> tags for app/page.tsx**
-   - This completely replaces the template page with your app
-   - Never use <edit> tags when creating the main application page initially
-   - Example: <new filename="app/page.tsx">YOUR_APP_CODE</new>
-
-4. The NextJS template already includes ALL configuration files pre-configured and working:
-   - package.json (React 18.2.0, Next.js 14.0.0, Tailwind CSS v3.4.0)
-   - tailwind.config.js (CommonJS format with proper content paths)
-   - postcss.config.js (CommonJS format with tailwindcss and autoprefixer)
-   - next.config.mjs (clean ES modules format)
-   - tsconfig.json (standard Next.js TypeScript configuration)
-   - app/globals.css (with @tailwind directives already included)
-   - app/layout.tsx (basic layout importing globals.css)
-   - components/Navigation.tsx (example navigation component)
-
-5. DO NOT generate or modify these CONFIGURATION files: package.json, tailwind.config.js, postcss.config.js, next.config.mjs, tsconfig.json, app/globals.css, app/layout.tsx
-
-6. **ALWAYS CREATE app/page.tsx with <new> tag for initial app creation!**
-
-7. APPLICATION COMPLEXITY GUIDELINES:
-   - For "simple" requests: Create single-page applications with minimal navigation
-   - For complex requests: Create multi-page applications with full navigation
-   - Match the complexity to the user's request, not always maximum features
-
-Remember: Create clean, working files that maintain the app's purpose while fixing all syntax errors."""
+Remember: FRONTEND ONLY - no auth, no database, no backend APIs. Rich UI/UX with local state management."""
 
     def get_user_prompt(self, app_idea):
         """Create the user prompt with the app idea."""

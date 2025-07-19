@@ -92,37 +92,47 @@ class LLMCoordinator:
         
         print("🧠 LLM Coordinator initialized")
     
-    def analyze_and_plan(self, user_request: str, request_type: str = "auto") -> ExecutionPlan:
+    def analyze_and_plan(self, user_request: str, request_type: str = "auto", mvp_spec=None) -> ExecutionPlan:
         """
         Analyze the user request and create a detailed execution plan.
         
         Args:
-            user_request: The user's request/idea
+            user_request: The user's request/idea (can be original or enhanced MVP)
             request_type: Type of request ('create_app', 'edit_app', 'add_feature', 'auto')
+            mvp_spec: Enhanced MVP specification if available
             
         Returns:
             ExecutionPlan: Detailed plan for executing the request
         """
         print("🧠 Analyzing request and creating execution plan...")
-        print(f"📝 Request: {user_request}")
+        
+        # Use MVP spec if available, otherwise use original request
+        planning_request = user_request
+        if mvp_spec:
+            print(f"📋 Using enhanced MVP specification")
+            print(f"🎯 Complexity level: {mvp_spec.complexity_level}")
+            print(f"📊 Estimated components: {mvp_spec.estimated_components}")
+            planning_request = mvp_spec.enhanced_prompt
+        else:
+            print(f"📝 Using original request: {user_request}")
         
         # Auto-detect request type if not specified
         if request_type == "auto":
-            request_type = self._classify_request_type(user_request)
+            request_type = self._classify_request_type(planning_request)
         
         print(f"🔍 Detected request type: {request_type}")
         
         # Use coordinator LLM to create detailed plan
-        planning_prompt = self._get_planning_prompt(user_request, request_type)
+        planning_prompt = self._get_planning_prompt(planning_request, request_type, mvp_spec)
         
         plan_response = self._call_coordinator_llm(planning_prompt, "planning")
         
         if not plan_response:
             # Fallback to simple plan
-            return self._create_fallback_plan(user_request, request_type)
+            return self._create_fallback_plan(planning_request, request_type, mvp_spec)
         
         # Parse the plan from LLM response
-        execution_plan = self._parse_execution_plan(plan_response, user_request, request_type)
+        execution_plan = self._parse_execution_plan(plan_response, planning_request, request_type)
         
         self.current_plan = execution_plan
         
@@ -263,62 +273,87 @@ class LLMCoordinator:
         else:
             return "create_app"  # Default
     
-    def _get_planning_prompt(self, user_request: str, request_type: str) -> str:
+    def _get_planning_prompt(self, user_request: str, request_type: str, mvp_spec=None) -> str:
         """Create the prompt for the coordinator LLM to plan the execution."""
-        return f"""You are a Senior Software Architect AI coordinating a complex NextJS development task.
-Your role is to create a detailed execution plan by breaking down the user request into smaller, manageable tasks.
+        
+        # Build MVP context if available
+        mvp_context = ""
+        if mvp_spec:
+            mvp_context = f"""
+MVP SPECIFICATION PROVIDED:
+- Core Features: {', '.join(mvp_spec.core_features)}
+- Technical Requirements: {', '.join(mvp_spec.technical_requirements)}
+- UI Components: {', '.join(mvp_spec.ui_components)}
+- Routing Structure: {', '.join(mvp_spec.routing_structure)}
+- Styling Approach: {mvp_spec.styling_approach}
+- Complexity Level: {mvp_spec.complexity_level}
+- Estimated Components: {mvp_spec.estimated_components}
+- Tech Stack: {', '.join(mvp_spec.suggested_tech_stack)}
+
+This is a comprehensive MVP that should result in a production-ready, shareable application.
+Plan accordingly for higher complexity and more thorough implementation."""
+        
+        return f"""You are a Senior Software Architect AI coordinating a complex FRONTEND-ONLY NextJS development task.
+Your role is to create a detailed execution plan by breaking down the user request into smaller, manageable frontend tasks.
 
 USER REQUEST: {user_request}
 REQUEST TYPE: {request_type}
+{mvp_context}
+
+CRITICAL: This is a FRONTEND-ONLY application. NO authentication, NO database, NO backend APIs.
+Focus on rich UI/UX, component architecture, and client-side functionality.
 
 You must respond with a JSON plan in this EXACT format:
 
 {{
   "complexity_assessment": "simple|moderate|complex|very_complex",
-  "execution_strategy": "Description of overall approach",
+  "execution_strategy": "Description of frontend-focused approach",
   "estimated_duration": "estimated time",
   "tasks": [
     {{
       "id": "task_1",
-      "type": "create_file|edit_file|analyze_context|validate_build|install_deps",
-      "description": "What this task accomplishes",
+      "type": "create_file|edit_file|analyze_context|validate_build|create_component|setup_routing|setup_styling",
+      "description": "What this frontend task accomplishes",
       "dependencies": ["task_id_that_must_complete_first"],
       "context_needed": ["files or info needed"],
       "priority": 1,
       "estimated_complexity": "simple|moderate|complex",
-      "llm_instructions": "Specific instructions for the LLM executing this task",
-      "validation_criteria": ["How to check if task succeeded"]
+      "llm_instructions": "Specific frontend-focused instructions for the LLM executing this task",
+      "validation_criteria": ["How to check if frontend task succeeded"]
     }}
   ],
-  "success_criteria": ["How to know if overall request is successful"]
+  "success_criteria": ["How to know if frontend application is successful"]
 }}
 
-KEY PRINCIPLES:
-1. Break complex requests into 3-8 smaller tasks
-2. Each task should be focused and testable
-3. Consider dependencies (some tasks need others to complete first)
-4. Specify what context/files each task needs to examine
-5. Provide clear validation criteria for each task
-6. Make LLM instructions specific and actionable
+KEY PRINCIPLES FOR FRONTEND-ONLY PLANNING:
+1. For MVP specs, break into 5-15 tasks for comprehensive frontend implementation
+2. Include production-ready patterns (error handling, loading states, responsive design)
+3. Plan for proper component architecture and reusability
+4. Consider client-side data flow and state management needs
+5. Include proper routing setup and navigation (client-side only)
+6. Plan for styling consistency and theme implementation
+7. Focus on localStorage/sessionStorage for data persistence
+8. Each task should be focused and testable
+9. Consider dependencies (some tasks need others to complete first)
+10. Specify what context/files each task needs to examine
+11. Provide clear validation criteria for each task
+12. NO authentication, NO database, NO backend APIs
 
-TASK TYPES:
+ENHANCED TASK TYPES FOR FRONTEND:
 - "analyze_context": Understand existing codebase/requirements
-- "create_file": Generate a new file
-- "edit_file": Modify existing file
-- "validate_build": Test that app builds/runs correctly
-- "install_deps": Add new dependencies
-- "create_component": Create reusable component
-- "setup_routing": Configure app routing
-- "add_styling": Add CSS/styling
-- "integrate_api": Connect to external APIs
+- "create_file": Generate a new frontend file
+- "edit_file": Modify existing frontend file
+- "validate_build": Test that app builds/runs correctly (frontend only)
+- "create_component": Create reusable React component with state management
+- "setup_routing": Configure NextJS client-side routing and navigation
+- "setup_styling": Configure styling system (Tailwind, CSS modules, etc.)
+- "create_layout": Create app layout and navigation structure
+- "setup_state": Configure client-side state management (useState, localStorage)
+- "add_features": Implement specific frontend feature functionality
+- "setup_interactions": Add interactivity (forms, modals, animations)
+- "optimize_ux": Enhance user experience and accessibility
 
-COMPLEXITY GUIDELINES:
-- simple: Single file creation, basic edits
-- moderate: Multiple files, some logic
-- complex: Architecture changes, complex features
-- very_complex: Major refactoring, multiple complex features
-
-Create a comprehensive plan that maximizes success and minimizes risk."""
+Focus on creating rich, interactive, production-ready frontend applications."""
 
     def _call_coordinator_llm(self, prompt: str, context: str) -> Optional[str]:
         """Call the coordinator LLM with the given prompt."""
@@ -391,58 +426,134 @@ Create a comprehensive plan that maximizes success and minimizes risk."""
             print(f"❌ Failed to parse execution plan: {str(e)}")
             return self._create_fallback_plan(user_request, request_type)
     
-    def _create_fallback_plan(self, user_request: str, request_type: str) -> ExecutionPlan:
+    def _create_fallback_plan(self, user_request: str, request_type: str, mvp_spec=None) -> ExecutionPlan:
         """Create a simple fallback plan when AI planning fails."""
         print("🔄 Creating fallback execution plan...")
         
         tasks = []
+        complexity = "moderate"
         
         if request_type == "create_app":
-            tasks = [
-                Task(
-                    id="analyze_requirements",
-                    type="analyze_context",
-                    description="Analyze user requirements",
-                    dependencies=[],
-                    context_needed=["user_request"],
-                    priority=1,
-                    estimated_complexity="simple",
-                    llm_instructions=f"Analyze this request and determine what type of app to build: {user_request}",
-                    validation_criteria=["Requirements are clear"]
-                ),
-                Task(
-                    id="create_main_page",
-                    type="create_file",
-                    description="Create main application page",
-                    dependencies=["analyze_requirements"],
-                    context_needed=["requirements"],
-                    priority=1,
-                    estimated_complexity="moderate",
-                    llm_instructions="Create the main app/page.tsx file with core functionality",
-                    validation_criteria=["File created", "TypeScript compiles"]
-                ),
-                Task(
-                    id="validate_build",
-                    type="validate_build",
-                    description="Validate app builds correctly",
-                    dependencies=["create_main_page"],
-                    context_needed=["all_files"],
-                    priority=2,
-                    estimated_complexity="simple",
-                    llm_instructions="Test that the app builds without errors",
-                    validation_criteria=["npm run build succeeds"]
-                )
-            ]
+            if mvp_spec:
+                # Enhanced fallback for MVP specs
+                print(f"📋 Creating enhanced fallback for MVP ({mvp_spec.complexity_level})")
+                complexity = mvp_spec.complexity_level
+                
+                tasks = [
+                    Task(
+                        id="setup_foundation",
+                        type="create_file",
+                        description="Setup app foundation and layout",
+                        dependencies=[],
+                        context_needed=["mvp_spec"],
+                        priority=1,
+                        estimated_complexity="moderate",
+                        llm_instructions=f"Create the foundational layout and structure for: {mvp_spec.enhanced_prompt}. Include proper TypeScript types, responsive design, and frontend-only architecture. NO auth, NO database, NO backend APIs.",
+                        validation_criteria=["Layout created", "TypeScript compiles", "Responsive design", "Frontend-only architecture"]
+                    ),
+                    Task(
+                        id="setup_routing",
+                        type="setup_routing",
+                        description="Configure NextJS routing structure",
+                        dependencies=["setup_foundation"],
+                        context_needed=["layout", "mvp_spec"],
+                        priority=1,
+                        estimated_complexity="simple",
+                        llm_instructions=f"Setup client-side routing for: {', '.join(mvp_spec.routing_structure)}. Focus on frontend navigation only.",
+                        validation_criteria=["Routes configured", "Navigation works", "Client-side routing only"]
+                    ),
+                    Task(
+                        id="create_components",
+                        type="create_component",
+                        description="Create core UI components",
+                        dependencies=["setup_routing"],
+                        context_needed=["layout", "routing"],
+                        priority=1,
+                        estimated_complexity="complex",
+                        llm_instructions=f"Create these frontend components: {', '.join(mvp_spec.ui_components)}. Include proper TypeScript types, error handling, loading states, and rich interactivity. Use React state and localStorage for data management.",
+                        validation_criteria=["Components created", "TypeScript compiles", "Components render correctly", "Interactive features work"]
+                    ),
+                    Task(
+                        id="implement_features",
+                        type="add_features",
+                        description="Implement core frontend features",
+                        dependencies=["create_components"],
+                        context_needed=["components", "routing"],
+                        priority=1,
+                        estimated_complexity="complex",
+                        llm_instructions=f"Implement these core frontend features: {', '.join(mvp_spec.core_features)}. Make it production-ready with proper error handling, local state management, localStorage persistence. NO backend dependencies.",
+                        validation_criteria=["Features implemented", "Error handling added", "Loading states included", "Local persistence works"]
+                    ),
+                    Task(
+                        id="setup_styling",
+                        type="setup_styling",
+                        description="Configure styling system",
+                        dependencies=["implement_features"],
+                        context_needed=["components", "layout"],
+                        priority=2,
+                        estimated_complexity="moderate",
+                        llm_instructions=f"Setup {mvp_spec.styling_approach} styling system with consistent theme, responsive design, and modern UI patterns. Focus on excellent user experience.",
+                        validation_criteria=["Styling configured", "Theme consistent", "Responsive design", "Modern UI patterns"]
+                    ),
+                    Task(
+                        id="validate_frontend",
+                        type="validate_build",
+                        description="Validate complete frontend application",
+                        dependencies=["setup_styling"],
+                        context_needed=["all_files"],
+                        priority=3,
+                        estimated_complexity="simple",
+                        llm_instructions="Test that the complete frontend application builds and runs without errors. Verify all features work with frontend-only architecture.",
+                        validation_criteria=["npm run build succeeds", "App starts correctly", "All features work", "No backend dependencies"]
+                    )
+                ]
+            else:
+                # Simple fallback for basic requests
+                tasks = [
+                    Task(
+                        id="analyze_requirements",
+                        type="analyze_context",
+                        description="Analyze user requirements",
+                        dependencies=[],
+                        context_needed=["user_request"],
+                        priority=1,
+                        estimated_complexity="simple",
+                        llm_instructions=f"Analyze this request and determine what type of app to build: {user_request}",
+                        validation_criteria=["Requirements are clear"]
+                    ),
+                    Task(
+                        id="create_main_page",
+                        type="create_file",
+                        description="Create main application page",
+                        dependencies=["analyze_requirements"],
+                        context_needed=["requirements"],
+                        priority=1,
+                        estimated_complexity="moderate",
+                        llm_instructions="Create the main app/page.tsx file with core functionality",
+                        validation_criteria=["File created", "TypeScript compiles"]
+                    ),
+                    Task(
+                        id="validate_build",
+                        type="validate_build",
+                        description="Validate app builds correctly",
+                        dependencies=["create_main_page"],
+                        context_needed=["all_files"],
+                        priority=2,
+                        estimated_complexity="simple",
+                        llm_instructions="Test that the app builds without errors",
+                        validation_criteria=["npm run build succeeds"]
+                    )
+                ]
         
         return ExecutionPlan(
             request_id=f"fallback_{int(time.time())}",
             user_request=user_request,
             request_type=request_type,
-            complexity_assessment="moderate",
+            complexity_assessment=complexity,
             tasks=tasks,
-            execution_strategy="Simple sequential execution with fallback",
-            estimated_duration="5-10 minutes",
-            success_criteria=["App builds successfully", "Core functionality works"],
+            execution_strategy="Enhanced MVP-aware sequential execution" if mvp_spec else "Simple sequential execution with fallback",
+            estimated_duration="15-30 minutes" if mvp_spec else "5-10 minutes",
+            success_criteria=["Production-ready MVP completed", "All features working", "App is shareable"] if mvp_spec else ["App builds successfully", "Core functionality works"],
             created_at=datetime.now().isoformat()
         )
     
@@ -693,12 +804,12 @@ Be precise and make only the necessary changes to accomplish the task.
                             context_info += f"  - {rel_path}\n"
             
             # Add specific context based on task type
-            if task.task_type == "create_file":
+            if task.type == "create_file":
                 context_info += f"\nTask: Create {task.description}\n"
                 context_info += "Important: Use proper NextJS App Router syntax with 'use client' directive for client components\n"
                 context_info += "Important: Use useRouter from 'next/navigation' not 'next/router'\n"
                 context_info += "Important: Ensure all JSX return statements are properly closed with parentheses\n"
-            elif task.task_type == "edit_file":
+            elif task.type == "edit_file":
                 context_info += f"\nTask: Edit {task.description}\n"
                 context_info += "Important: When generating diffs, account for 'use client' directives at the top of files\n"
                 context_info += "Important: Provide exact context matching for diff application\n"

@@ -31,6 +31,9 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 from lib.app_builder import MultiLLMAppBuilder
 from lib.code_builder import CodeBuilder
+from lib.mvp_enhancer import MVPEnhancer
+from lib.llm_coordinator import LLMCoordinator
+from lib.dependency_manager import DependencyManager
 
 
 class BuildErrorLogger:
@@ -147,10 +150,18 @@ class MasterBuilder:
         # Initialize the AI app builder
         self.app_builder = MultiLLMAppBuilder()
         
+        # Initialize MVP enhancer for complex app development
+        self.mvp_enhancer = MVPEnhancer()
+        
+        # Initialize LLM coordinator for intelligent planning
+        self.coordinator = LLMCoordinator(self.app_builder)
+        
         print(f"🏗️  Master Builder initialized in: {self.project_root}")
         print(f"📁 Apps directory: {self.apps_dir}")
         print(f"📄 Inputs directory: {self.inputs_dir}")
         print(f"📋 Build error log: {self.error_logger.log_file}")
+        print(f"🎯 MVP Enhancer: Ready for complex app development")
+        print(f"🧠 LLM Coordinator: Ready for intelligent planning")
         
         # Create directories if they don't exist
         self.apps_dir.mkdir(exist_ok=True)
@@ -362,20 +373,100 @@ Multi-LLM Builder with validation
     
     def build_and_run(self, app_idea: str, app_name: Optional[str] = None, port: Optional[int] = None) -> bool:
         """
-        Complete workflow to build and run a NextJS app:
-        1. Create template
-        2. Generate AI changes
-        3. Apply changes
-        4. Validate build
-        5. Run the app
-        Enhanced with comprehensive logging.
+        Enhanced workflow to build and run complex NextJS apps:
+        1. MVP Enhancement - Transform user idea into comprehensive specification
+        2. Intelligent Planning - Create detailed execution plan
+        3. Coordinated Execution - Build app using multiple coordinated steps
+        4. Validation and Running
         """
         if app_name is None:
             app_name = self.get_next_app_name()
         
         app_directory = str(self.apps_dir / app_name)
         
-        print("🚀 NextJS App Builder")
+        print("🚀 Enhanced NextJS App Builder (MVP-Driven)")
+        print("=" * 60)
+        print(f"App Name: {app_name}")
+        print(f"Original Idea: {app_idea}")
+        print(f"Directory: {app_directory}")
+        print("-" * 60)
+        
+        # Log the start of app creation
+        self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", None)
+        
+        try:
+            # Step 1: Enhance user prompt to MVP specification
+            print("\n🎯 Step 1: Enhancing prompt to MVP specification...")
+            mvp_spec = self.mvp_enhancer.enhance_prompt_to_mvp(app_idea)
+            
+            # Step 2: Create intelligent execution plan
+            print("\n🧠 Step 2: Creating intelligent execution plan...")
+            execution_plan = self.coordinator.analyze_and_plan(app_idea, "create_app", mvp_spec)
+            
+            # Step 3: Create NextJS template foundation
+            print("\n📦 Step 3: Creating NextJS template foundation...")
+            if not self.create_template_nextjs_app(app_name):
+                print("❌ Failed to create template")
+                self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", False)
+                return False
+        
+            # Step 4: Install dependencies
+            print("\n📦 Step 4: Installing dependencies...")
+            if not self.install_dependencies(app_directory):
+                print("❌ Failed to install dependencies")
+                self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", False)
+                return False
+        
+            # Step 5: Execute coordinated plan
+            print("\n🎯 Step 5: Executing coordinated development plan...")
+            if not self.execute_coordinated_plan(execution_plan, mvp_spec, app_name, app_directory):
+                print("❌ Failed to execute coordinated plan")
+                self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", False)
+                return False
+        
+            # Step 6: Final validation and build fixing
+            print("\n🔍 Step 6: Final validation and build fixing...")
+            if not self.validate_and_fix_build(app_directory):
+                print("⚠️  Build validation failed, but app was created")
+        
+            print(f"\n🎉 Successfully created enhanced MVP: {app_name}!")
+            print(f"📋 Implemented {len(mvp_spec.core_features)} core features")
+            print(f"🏗️ Created {mvp_spec.estimated_components}+ components")
+            print(f"🎨 Used {mvp_spec.styling_approach} for styling")
+            self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", True)
+        
+            # Step 7: Optionally run the app
+            if port is not None:
+                print(f"\n🚀 Starting enhanced app on port {port}...")
+                self.run_nextjs_app(app_directory, port)
+            else:
+                # Ask user if they want to run it
+                response = input("\n🚀 Start the development server? [Y/n]: ").strip().lower()
+                if response == '' or response == 'y' or response == 'yes':
+                    self.run_nextjs_app(app_directory)
+        
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error in enhanced build and run: {str(e)}")
+            self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", False)
+            return False
+
+    def build_and_run_legacy(self, app_idea: str, app_name: Optional[str] = None, port: Optional[int] = None) -> bool:
+        """
+        Legacy simple workflow (kept for compatibility):
+        1. Create template
+        2. Generate AI changes
+        3. Apply changes
+        4. Validate build
+        5. Run the app
+        """
+        if app_name is None:
+            app_name = self.get_next_app_name()
+        
+        app_directory = str(self.apps_dir / app_name)
+        
+        print("🚀 NextJS App Builder (Legacy Mode)")
         print("=" * 50)
         print(f"App Name: {app_name}")
         print(f"App Idea: {app_idea}")
@@ -383,21 +474,21 @@ Multi-LLM Builder with validation
         print("-" * 50)
         
         # Log the start of app creation
-        self.error_logger.log_build_attempt(app_name, f"create: {app_idea[:50]}...", None)
+        self.error_logger.log_build_attempt(app_name, f"legacy_create: {app_idea[:50]}...", None)
         
         try:
             # Step 1: Create NextJS template
             print("\n📦 Creating NextJS template...")
             if not self.create_template_nextjs_app(app_name):
                 print("❌ Failed to create template")
-                self.error_logger.log_build_attempt(app_name, f"create: {app_idea[:50]}...", False)
+                self.error_logger.log_build_attempt(app_name, f"legacy_create: {app_idea[:50]}...", False)
                 return False
         
             # Step 2: Install dependencies automatically
             print("\n📦 Installing dependencies...")
             if not self.install_dependencies(app_directory):
                 print("❌ Failed to install dependencies")
-                self.error_logger.log_build_attempt(app_name, f"create: {app_idea[:50]}...", False)
+                self.error_logger.log_build_attempt(app_name, f"legacy_create: {app_idea[:50]}...", False)
                 return False
         
             # Step 3: Generate AI changes
@@ -405,14 +496,14 @@ Multi-LLM Builder with validation
             input_file = self.generate_ai_changes(app_idea, app_name)
             if not input_file:
                 print("❌ Failed to generate AI changes")
-                self.error_logger.log_build_attempt(app_name, f"create: {app_idea[:50]}...", False)
+                self.error_logger.log_build_attempt(app_name, f"legacy_create: {app_idea[:50]}...", False)
                 return False
         
             # Step 4: Apply changes
             print("\n🔧 Applying changes...")
             if not self.apply_changes(input_file, app_directory):
                 print("❌ Failed to apply changes")
-                self.error_logger.log_build_attempt(app_name, f"create: {app_idea[:50]}...", False)
+                self.error_logger.log_build_attempt(app_name, f"legacy_create: {app_idea[:50]}...", False)
                 return False
         
             # Step 5: Validate and auto-fix build
@@ -421,7 +512,7 @@ Multi-LLM Builder with validation
                 print("⚠️  Build validation failed, but app was created")
         
             print(f"🎉 Successfully created {app_name}!")
-            self.error_logger.log_build_attempt(app_name, f"create: {app_idea[:50]}...", True)
+            self.error_logger.log_build_attempt(app_name, f"legacy_create: {app_idea[:50]}...", True)
         
             # Step 5: Optionally run the app
             if port is not None:
@@ -436,10 +527,106 @@ Multi-LLM Builder with validation
             return True
             
         except Exception as e:
-            print(f"❌ Error in build and run: {str(e)}")
-            self.error_logger.log_build_attempt(app_name, f"create: {app_idea[:50]}...", False)
+            print(f"❌ Error in legacy build and run: {str(e)}")
+            self.error_logger.log_build_attempt(app_name, f"legacy_create: {app_idea[:50]}...", False)
             return False
 
+    def execute_coordinated_plan(self, execution_plan, mvp_spec, app_name: str, app_directory: str) -> bool:
+        """
+        Execute the coordinated development plan using the LLM coordinator.
+        
+        Args:
+            execution_plan: The execution plan from the coordinator
+            mvp_spec: The MVP specification
+            app_name: Name of the app being built
+            app_directory: Directory where the app is being built
+            
+        Returns:
+            True if plan executed successfully, False otherwise
+        """
+        try:
+            print(f"🎯 Executing {len(execution_plan.tasks)} coordinated tasks...")
+            print(f"📋 Strategy: {execution_plan.execution_strategy}")
+            print(f"⏱️ Estimated duration: {execution_plan.estimated_duration}")
+            
+            # Format MVP spec for the app builder
+            enhanced_request = self.mvp_enhancer.format_mvp_for_coordinator(mvp_spec)
+            
+            # 🖨️ SHOW THE FORMATTED MVP REQUEST BEING USED
+            print("\n" + "=" * 80)
+            print("🎯 USING ENHANCED MVP SPECIFICATION FOR CODE GENERATION:")
+            print("=" * 80)
+            print(enhanced_request)
+            print("=" * 80)
+            
+            # Create app builder instance for this specific app
+            app_builder = MultiLLMAppBuilder()
+            app_builder.app_name = app_name
+            app_builder.apps_dir = Path(app_directory).parent
+            
+            # Use the coordinator mode for complex builds
+            app_builder.set_coordinator_mode(True)
+            
+            # Generate the coordinated content
+            print("\n🤖 Generating coordinated AI content...")
+            print("🧠 This may take a moment while the AI creates your application...")
+            generated_content = app_builder.generate_app(enhanced_request)
+            
+            if not generated_content:
+                print("❌ Failed to generate coordinated content")
+                return False
+            
+            # Create app-specific input directory
+            app_input_dir = self.inputs_dir / app_name
+            app_input_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Save to file with enhanced metadata
+            timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+            output_filename = app_input_dir / f"enhanced_mvp_v1_{timestamp}.txt"
+            
+            header = f"""<!-- 
+Generated Enhanced NextJS Frontend Application
+Original Idea: {mvp_spec.original_prompt}
+Enhanced MVP: {mvp_spec.enhanced_prompt}
+Complexity: {mvp_spec.complexity_level}
+Core Features: {', '.join(mvp_spec.core_features)}
+Components: {mvp_spec.estimated_components}
+Tech Stack: {', '.join(mvp_spec.suggested_tech_stack)}
+Generated: {time.strftime("%Y-%m-%d %H:%M:%S")}
+Frontend-Only MVP Builder with intelligent coordination
+-->
+
+"""
+            
+            with open(output_filename, 'w', encoding='utf-8') as f:
+                f.write(header + generated_content)
+            
+            print(f"✅ Enhanced AI content saved to: {output_filename}")
+            
+            # Apply the coordinated changes
+            print("\n" + "🔥" * 80)
+            print("🔧 APPLYING COORDINATED CHANGES - CREATING FILES...")
+            print("🔥" * 80)
+            builder = CodeBuilder(str(output_filename), app_directory, self.error_logger)
+            builder.build()
+            
+            # NEW: Automatic dependency management
+            print("\n📦 Managing dependencies automatically...")
+            dependency_manager = DependencyManager(app_directory)
+            if dependency_manager.auto_manage_dependencies():
+                print("✅ Dependencies managed successfully!")
+            else:
+                print("⚠️ Dependency management completed with warnings")
+            
+            print("\n" + "🎉" * 80)
+            print("✅ COORDINATED PLAN EXECUTED SUCCESSFULLY!")
+            print("🎉" * 80)
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error executing coordinated plan: {str(e)}")
+            return False
+    
     def analyze_app_structure(self, app_directory: str) -> str:
         """Analyze an existing NextJS app structure and return formatted content."""
         app_path = Path(app_directory)
@@ -555,6 +742,10 @@ Multi-LLM Builder with validation
         app_name = Path(app_directory).name
         print("🔨 Validating NextJS build...")
         
+        # 🔧 CRITICAL FIX: Configure app builder with proper app context
+        # This prevents the "App name not set" infinite loop error
+        self._configure_app_builder_for_validation(app_name, app_directory)
+        
         # Log the start of validation
         self.error_logger.log_build_attempt(app_name, "validation", None)
         
@@ -564,6 +755,11 @@ Multi-LLM Builder with validation
         last_errors = []
         file_attempt_count = {}
         
+        # 🛡️ SAFETY MECHANISMS: Prevent infinite loops
+        max_total_attempts = 15  # Hard limit to prevent infinite loops
+        consecutive_same_errors = 0  # Track how many times we see identical errors
+        max_consecutive_same = 3  # Max times to see same errors before giving up
+        
         while True:
             attempt += 1
             elapsed_time = time.time() - start_time
@@ -572,6 +768,17 @@ Multi-LLM Builder with validation
             if elapsed_time > max_time_seconds:
                 print(f"\n⏰ Time limit reached ({max_time_minutes} minutes)")
                 print("❌ Unable to fix all build errors within time limit")
+                
+                # Log session summary
+                self.error_logger.log_session_summary(
+                    app_name, attempt, False, elapsed_time
+                )
+                return False
+            
+            # 🛡️ SAFETY: Hard limit on total attempts
+            if attempt > max_total_attempts:
+                print(f"\n🛑 Maximum attempts reached ({max_total_attempts})")
+                print("❌ Stopping to prevent infinite loop")
                 
                 # Log session summary
                 self.error_logger.log_session_summary(
@@ -597,6 +804,30 @@ Multi-LLM Builder with validation
             
             current_errors = build_result["errors"]
             print(f"🐛 Found {len(current_errors)} build error(s)")
+            
+            # 🛡️ SAFETY: Detect identical repeating errors
+            if attempt > 1 and current_errors == last_errors:
+                consecutive_same_errors += 1
+                print(f"⚠️  Same errors as last attempt ({consecutive_same_errors}/{max_consecutive_same})")
+                
+                if consecutive_same_errors >= max_consecutive_same:
+                    print(f"\n🛑 Identical errors repeated {max_consecutive_same} times")
+                    print("❌ Likely stuck in infinite loop - stopping auto-fix")
+                    print("💡 Manual intervention may be required")
+                    
+                    # Show the problematic errors for debugging
+                    print("\n🔍 Problematic errors that couldn't be fixed:")
+                    for i, error in enumerate(current_errors[:3], 1):
+                        print(f"   {i}. {error[:200]}{'...' if len(error) > 200 else ''}")
+                    
+                    # Log session summary
+                    self.error_logger.log_session_summary(
+                        app_name, attempt, False, elapsed_time
+                    )
+                    return False
+            else:
+                # Errors are different, reset the counter
+                consecutive_same_errors = 0
             
             # Log the build errors
             self.error_logger.log_build_errors(app_name, current_errors, attempt)
@@ -660,7 +891,32 @@ Multi-LLM Builder with validation
             time.sleep(1)  # Brief pause between attempts
         
         return False
+    
+    def _configure_app_builder_for_validation(self, app_name: str, app_directory: str):
+        """
+        Configure the app builder with proper app context for validation/auto-fixing.
         
+        This prevents the "App name not set" error that causes infinite loops.
+        """
+        try:
+            # Set the app name and apps directory
+            self.app_builder.app_name = app_name
+            self.app_builder.apps_dir = Path(app_directory).parent
+            
+            # Validate the configuration
+            test_path = self.app_builder.get_app_path()
+            if test_path != app_directory:
+                print(f"⚠️ App path mismatch: expected {app_directory}, got {test_path}")
+                # Force set to correct path
+                self.app_builder.app_name = app_name
+                self.app_builder.apps_dir = Path(app_directory).parent
+            
+            print(f"✅ App builder configured: {app_name} -> {app_directory}")
+            
+        except Exception as e:
+            print(f"⚠️ Warning: Could not configure app builder: {e}")
+            print("🔄 This may cause some auto-fix features to be unavailable")
+    
     def extract_files_from_errors(self, errors: list) -> list:
         """Extract file paths from build error messages."""
         files = set()
@@ -695,8 +951,8 @@ Multi-LLM Builder with validation
                 return False
             
             # Save and apply the rewrite
-            rewrite_filename = f"rewrite_{int(time.time())}.txt"
-            rewrite_file_path = self.inputs_dir / Path(app_directory).name / rewrite_filename
+            rewrite_filename = f"rewrite_{int(time.time())}"
+            rewrite_file_path = self.inputs_dir / Path(app_directory).name / f"{rewrite_filename}.txt"
             rewrite_file_path.parent.mkdir(parents=True, exist_ok=True)
             
             with open(rewrite_file_path, 'w', encoding='utf-8') as f:
@@ -704,7 +960,30 @@ Multi-LLM Builder with validation
             
             print(f"💾 File rewrite instructions saved to: {rewrite_file_path}")
             
-            # Apply the rewrite
+            # 🔧 INTELLIGENT FIX: Use appropriate builder based on format
+            is_unified_diff = self._is_unified_diff_format(rewrite_instructions)
+            
+            if is_unified_diff:
+                print(f"🔧 Applying rewrite using DiffBuilder (unified diff format)...")
+                # Save as .patch file for DiffBuilder
+                patch_file_path = self.inputs_dir / Path(app_directory).name / f"{rewrite_filename}.patch"
+                with open(patch_file_path, 'w', encoding='utf-8') as f:
+                    f.write(rewrite_instructions)
+                
+                # Apply using DiffBuilder
+                from .lib.diff_builder import DiffBuilder
+                diff_builder = DiffBuilder(str(patch_file_path), app_directory)
+                success = diff_builder.build()
+                
+                if success:
+                    print("✅ File rewrite applied successfully using DiffBuilder!")
+                    return True
+                else:
+                    print("❌ DiffBuilder failed, trying CodeBuilder as fallback...")
+                    # Fall through to CodeBuilder
+            
+            # Apply using CodeBuilder for <new>/<edit> format or as fallback
+            print(f"🔧 Applying rewrite using CodeBuilder...")
             return self.apply_changes(str(rewrite_file_path), app_directory)
             
         except Exception as e:
@@ -1072,20 +1351,87 @@ Multi-LLM Builder with validation
             if not fix_instructions:
                 return False
             
-            # Save and apply the fix
-            fix_filename = f"autofix_{int(time.time())}.txt"
-            fix_file_path = self.inputs_dir / Path(app_directory).name / fix_filename
+            # 🔧 CRITICAL FIX: Use DiffBuilder for unified diff patches, CodeBuilder for <new>/<edit> blocks
+            fix_filename = f"autofix_{int(time.time())}"
+            fix_file_path = self.inputs_dir / Path(app_directory).name / f"{fix_filename}.txt"
             fix_file_path.parent.mkdir(parents=True, exist_ok=True)
             
             with open(fix_file_path, 'w', encoding='utf-8') as f:
                 f.write(fix_instructions)
             
-            # Apply the fix
+            # Detect whether this is a unified diff or legacy format
+            is_unified_diff = self._is_unified_diff_format(fix_instructions)
+            
+            if is_unified_diff:
+                print(f"🔧 Applying unified diff patch using DiffBuilder...")
+                # Save as .patch file for DiffBuilder
+                patch_file_path = self.inputs_dir / Path(app_directory).name / f"{fix_filename}.patch"
+                with open(patch_file_path, 'w', encoding='utf-8') as f:
+                    f.write(fix_instructions)
+                
+                # Apply using DiffBuilder
+                from .lib.diff_builder import DiffBuilder
+                diff_builder = DiffBuilder(str(patch_file_path), app_directory)
+                success = diff_builder.build()
+                
+                if success:
+                    print("✅ Unified diff applied successfully!")
+                    return True
+                else:
+                    print("❌ DiffBuilder failed, trying CodeBuilder as fallback...")
+                    # Fall through to CodeBuilder
+            
+            # Apply using legacy CodeBuilder for <new>/<edit> format
+            print(f"🔧 Applying changes using CodeBuilder...")
             return self.apply_changes(str(fix_file_path), app_directory)
             
         except Exception as e:
             print(f"❌ Auto-fix failed: {str(e)}")
             return False
+    
+    def _is_unified_diff_format(self, content: str) -> bool:
+        """
+        Detect if content is in unified diff format vs legacy <new>/<edit> format.
+        
+        Args:
+            content: The fix instructions content
+            
+        Returns:
+            True if unified diff, False if legacy format
+        """
+        # Check for unified diff markers
+        diff_markers = [
+            "*** Begin Patch",
+            "*** Update File:",
+            "*** End Patch",
+            "@@ -",
+            "@@"
+        ]
+        
+        # Check for legacy format markers
+        legacy_markers = [
+            "<new filename=",
+            "<edit filename=",
+            "</new>",
+            "</edit>"
+        ]
+        
+        has_diff_markers = any(marker in content for marker in diff_markers)
+        has_legacy_markers = any(marker in content for marker in legacy_markers)
+        
+        # If it has diff markers but no legacy markers, it's a unified diff
+        if has_diff_markers and not has_legacy_markers:
+            return True
+        
+        # If it has legacy markers but no diff markers, it's legacy format
+        if has_legacy_markers and not has_diff_markers:
+            return False
+        
+        # If it has both or neither, make a best guess based on prevalence
+        if has_diff_markers:
+            return True
+        
+        return False
     
     def generate_error_fix_idea(self, errors: list) -> str:
         """Generate a fix idea based on common error patterns."""
@@ -1152,39 +1498,18 @@ Examples:
     
     parser.add_argument("--openai-key", help="OpenAI API key (or set OPENAI_API_KEY env var)")
     parser.add_argument("--openrouter-key", help="OpenRouter API key (or set OPENROUTER_API_KEY env var)")
-    parser.add_argument("--idea", help="The NextJS app idea to build or edit instruction")
-    parser.add_argument("--name", help="Custom name for the app (default: auto-generated)")
-    parser.add_argument("--port", type=int, default=None, help="Port for the development server (default: auto-detect starting from 3000)")
-    parser.add_argument("--edit", help="Edit existing app by name (e.g., myapp2)")
-    parser.add_argument("--list", action="store_true", help="List existing NextJS apps")
-    parser.add_argument("--interactive", "-i", action="store_true", help="Interactive mode")
-    parser.add_argument("--coordinator", action="store_true", default=True, help="Enable LLM coordinator (default: enabled)")
-    parser.add_argument("--no-coordinator", action="store_true", help="Disable LLM coordinator and use traditional approach")
+    parser.add_argument('-i', '--idea', type=str, help='App idea/description')
+    parser.add_argument('-n', '--name', type=str, help='Custom app name (optional)')
+    parser.add_argument('-p', '--port', type=int, help='Port number for dev server (auto-detect if not specified)')
+    parser.add_argument('--interactive', action='store_true', help='Run in interactive mode')
+    parser.add_argument('-e', '--edit', type=str, help='Edit existing app by name')
+    parser.add_argument('--legacy', action='store_true', help='Use legacy simple mode instead of enhanced MVP mode')
     
     args = parser.parse_args()
     
     try:
         # Initialize the master builder
         master = MasterBuilder()
-        
-        # Configure coordinator mode based on arguments
-        if args.no_coordinator:
-            master.app_builder.set_coordinator_mode(False)
-        elif args.coordinator:
-            master.app_builder.set_coordinator_mode(True)
-        
-        # Handle list mode
-        if args.list:
-            existing_apps = master.list_existing_apps()
-            if existing_apps:
-                print("📱 Existing NextJS Apps:")
-                print("=" * 30)
-                for app in existing_apps:
-                    print(f"  • {app}")
-                print(f"\nTotal: {len(existing_apps)} apps")
-            else:
-                print("📱 No existing NextJS apps found")
-            sys.exit(0)
         
         # Handle edit mode
         if args.edit:
@@ -1302,8 +1627,12 @@ Examples:
                     
                     print()
                     
-                    # Build and run
-                    success = master.build_and_run(user_input, custom_name, port)
+                    # Build and run - use legacy mode if in interactive (for compatibility)
+                    # or enhanced MVP mode for better results
+                    if getattr(args, 'legacy', False):
+                        success = master.build_and_run_legacy(user_input, custom_name, port)
+                    else:
+                        success = master.build_and_run(user_input, custom_name, port)
                     
                     if success:
                         print(f"\n🎉 Success! App created and ready to use.")
@@ -1319,8 +1648,13 @@ Examples:
                     print("⚠️  Invalid input")
                     continue
         else:
-            # Single run mode
-            success = master.build_and_run(args.idea, args.name, args.port)
+            # Single run mode - choose enhanced MVP or legacy mode
+            if args.legacy:
+                print("🔧 Using legacy simple mode")
+                success = master.build_and_run_legacy(args.idea, args.name, args.port)
+            else:
+                print("🎯 Using enhanced MVP mode (default)")
+                success = master.build_and_run(args.idea, args.name, args.port)
             if success:
                 sys.exit(0)
             else:
