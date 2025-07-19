@@ -73,7 +73,17 @@ class IntentBasedEditor:
         target_file = self.repo_root / file_path
         
         if not target_file.exists():
-            return False, f"File not found: {file_path}"
+            # Check if any intent is for creating a new file
+            creation_intents = [intent for intent in intents if intent.action == "insert" and intent.target == ""]
+            if creation_intents:
+                # Use the first creation intent to create the file
+                creation_intent = creation_intents[0]
+                print(f"📄 Creating new file: {file_path}")
+                target_file.parent.mkdir(parents=True, exist_ok=True)
+                target_file.write_text(creation_intent.replacement)
+                return True, f"Created new file: {file_path}"
+            else:
+                return False, f"File not found: {file_path}"
         
         try:
             # Read current content
@@ -190,6 +200,35 @@ class IntentBasedEditor:
             pass  # Debug file save is not critical
 
 
+def _fix_template_literals_in_json(json_str: str) -> str:
+    """
+    Fix template literals in JSON strings by converting them to escaped strings.
+    
+    Template literals (`string`) are not valid JSON, but AIs sometimes use them.
+    This function converts them to proper JSON strings.
+    """
+    # Pattern to match template literals: `content`
+    # We need to be careful to only match template literals in string values, not keys
+    
+    # Replace template literals with escaped strings
+    # This regex matches: "key": `template literal content`
+    pattern = r'("(?:[^"\\]|\\.)*":\s*)`([^`]*)`'
+    
+    def replace_template_literal(match):
+        key_part = match.group(1)  # The "key": part
+        content = match.group(2)   # The template literal content
+        
+        # Escape the content for JSON
+        escaped_content = content.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+        
+        return f'{key_part}"{escaped_content}"'
+    
+    # Apply the replacement
+    fixed_json = re.sub(pattern, replace_template_literal, json_str)
+    
+    return fixed_json
+
+
 def parse_ai_intent_response(ai_response: str) -> List[EditIntent]:
     """
     Parse AI response containing structured editing intents.
@@ -219,6 +258,9 @@ def parse_ai_intent_response(ai_response: str) -> List[EditIntent]:
         else:
             # Try to find JSON without code blocks
             json_str = ai_response.strip()
+        
+        # Fix template literals in JSON (convert backticks to escaped strings)
+        json_str = _fix_template_literals_in_json(json_str)
         
         data = json.loads(json_str)
         

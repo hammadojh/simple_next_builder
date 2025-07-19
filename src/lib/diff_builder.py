@@ -218,7 +218,82 @@ class DiffSanitizer:
             if not re.match(r'@@ -\d+,\d+ \+\d+,\d+ @@', hunk):
                 issues.append(f"Hunk {i+1} has invalid header format: {hunk}")
         
+        # Enhanced validation for context issues
+        context_issues = self._validate_diff_context(patch_text)
+        issues.extend(context_issues)
+        
         return len(issues) == 0, issues
+    
+    def _validate_diff_context(self, patch_text: str) -> List[str]:
+        """Validate that diff context makes sense and doesn't duplicate existing content."""
+        issues = []
+        
+        # Extract file updates and their content
+        file_sections = re.split(r'\*\*\* Update File: (.+)', patch_text)
+        
+        for i in range(1, len(file_sections), 2):
+            if i + 1 >= len(file_sections):
+                continue
+                
+            file_path = file_sections[i].strip()
+            diff_content = file_sections[i + 1]
+            
+            # Check if file exists to validate context
+            target_file = self.repo_root / file_path
+            if not target_file.exists():
+                continue
+                
+            try:
+                existing_content = target_file.read_text()
+                file_issues = self._check_file_diff_context(file_path, diff_content, existing_content)
+                issues.extend(file_issues)
+            except Exception:
+                continue  # Skip validation if file can't be read
+        
+        return issues
+    
+    def _check_file_diff_context(self, file_path: str, diff_content: str, existing_content: str) -> List[str]:
+        """Check for common AI diff generation mistakes."""
+        issues = []
+        
+        # Find all added lines (lines starting with +)
+        added_lines = []
+        for line in diff_content.split('\n'):
+            if line.startswith('+') and not line.startswith('+++'):
+                added_lines.append(line[1:].strip())  # Remove + prefix
+        
+        # Check if added lines already exist in the file
+        existing_lines = [line.strip() for line in existing_content.split('\n')]
+        
+        duplicate_count = 0
+        for added_line in added_lines:
+            if added_line and added_line in existing_lines:
+                duplicate_count += 1
+        
+        # If more than 50% of added lines already exist, flag as suspicious
+        if added_lines and duplicate_count / len(added_lines) > 0.5:
+            issues.append(f"Suspicious diff for {file_path}: {duplicate_count}/{len(added_lines)} added lines already exist in file")
+        
+        # Check for common patterns that indicate AI confusion
+        if any("className=" in line for line in added_lines):
+            # Check if we're trying to add existing JSX structure
+            jsx_elements = [line for line in added_lines if "<div" in line or "<button" in line or "<span" in line]
+            existing_jsx = [line for line in existing_lines if "<div" in line or "<button" in line or "<span" in line]
+            
+            if jsx_elements and len(jsx_elements) > 1:
+                # Check for similarity with existing JSX
+                similar_count = 0
+                for jsx_line in jsx_elements:
+                    for existing_jsx_line in existing_jsx:
+                        # Simple similarity check
+                        if len(set(jsx_line.split()) & set(existing_jsx_line.split())) > 3:
+                            similar_count += 1
+                            break
+                
+                if similar_count > len(jsx_elements) * 0.5:
+                    issues.append(f"Suspicious JSX duplication in {file_path}: AI may be re-adding existing elements")
+        
+        return issues
 
 
 class DiffParser:
@@ -350,6 +425,11 @@ class FuzzyMatcher:
         print(f"🔍 DEBUG: Fuzzy matching - expected_line={expected_line}, context_lines={len(context_lines)}")
         print(f"🔍 DEBUG: Context to match: {context_lines[:3] if context_lines else 'None'}")
         
+        # Special case: New file creation (empty file)
+        if not file_lines and expected_line == 0:
+            print(f"🔍 DEBUG: New file creation - using line 0")
+            return 0
+        
         if expected_line < len(file_lines):
             print(f"🔍 DEBUG: File content around expected line {expected_line}:")
             start_preview = max(0, expected_line - 2)
@@ -359,12 +439,12 @@ class FuzzyMatcher:
                 print(f"🔍 DEBUG: {marker}{i}: {repr(file_lines[i][:50])}")
         
         if not context_lines:
-            # No context to match against - use expected line if valid
-            if 0 <= expected_line < len(file_lines):
+            # No context to match against - use expected line if valid or end of file
+            if 0 <= expected_line <= len(file_lines):
                 print(f"🔍 DEBUG: No context lines, using expected line {expected_line}")
                 return expected_line
-            print(f"🔍 DEBUG: No context lines and invalid expected line {expected_line}")
-            return None
+            print(f"🔍 DEBUG: No context lines and invalid expected line {expected_line}, using end of file")
+            return len(file_lines)
             
         # First try sliding window search around expected location
         print(f"🔍 DEBUG: Trying sliding window search")
@@ -515,6 +595,8 @@ class DiffApplier:
                 current_lines = current_content.splitlines(keepends=True)
             else:
                 current_lines = []
+                # For new files, ensure parent directory exists
+                target_file.parent.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             return PatchResult(False, file_path, f"Failed to read file: {e}")
             

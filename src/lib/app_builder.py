@@ -1542,6 +1542,185 @@ Make minimal, targeted changes to implement the requested features."""
         code_builder = CodeBuilder(edit_file, self.get_app_path())
         return code_builder.build()
 
+    def parse_build_errors(self) -> List[str]:
+        """
+        Parse build errors by running npm build and extracting error details.
+        
+        Returns:
+            List of build error strings
+        """
+        import subprocess
+        import os
+        
+        app_path = self.get_app_path()
+        
+        try:
+            # Change to app directory
+            original_dir = os.getcwd()
+            os.chdir(app_path)
+            
+            # Try to build the app to get errors
+            result = subprocess.run(['npm', 'run', 'build'], 
+                                  capture_output=True, text=True, timeout=120)
+            
+            if result.returncode == 0:
+                # Build successful, no errors
+                return []
+            
+            # Parse the build output to extract errors
+            build_output = result.stdout + result.stderr
+            errors = self._extract_build_errors_from_output(build_output)
+            
+            return errors
+                
+        except subprocess.TimeoutExpired:
+            return ["Build timed out"]
+        except FileNotFoundError:
+            return ["npm not found - please install Node.js"]
+        except Exception as e:
+            return [f"Build error: {str(e)}"]
+        finally:
+            # Return to original directory
+            try:
+                os.chdir(original_dir)
+            except:
+                pass
+    
+    def _extract_build_errors_from_output(self, build_output: str) -> List[str]:
+        """Extract specific error messages from NextJS build output."""
+        errors = []
+        lines = build_output.split('\n')
+        
+        current_error = []
+        in_error_section = False
+        
+        for line in lines:
+            line_stripped = line.strip()
+            
+            # Detect error sections
+            if 'Failed to compile' in line or 'Error:' in line:
+                if current_error:
+                    errors.append('\n'.join(current_error))
+                current_error = [line_stripped]
+                in_error_section = True
+                continue
+            
+            # TypeScript/ESLint error patterns
+            if any(pattern in line for pattern in [
+                'Type error:', 'SyntaxError:', 'ReferenceError:', 
+                'the name', 'is defined multiple times', 'does not exist on type',
+                'Property', 'Argument of type', 'Cannot find module'
+            ]):
+                if not in_error_section:
+                    current_error = []
+                    in_error_section = True
+                current_error.append(line_stripped)
+                continue
+            
+            # File path lines (like ./app/page.tsx)
+            if line_stripped.startswith('./') and any(ext in line for ext in ['.tsx', '.ts', '.jsx', '.js']):
+                if not in_error_section:
+                    current_error = []
+                    in_error_section = True
+                current_error.append(line_stripped)
+                continue
+            
+            # Error details and context
+            if in_error_section and line_stripped:
+                # Look for error indicators
+                if any(indicator in line for indicator in [
+                    '×', '✗', '╭─', '│', '╰──', '·', 'at line', 'previous definition',
+                    'redefined here', 'Import trace'
+                ]):
+                    current_error.append(line_stripped)
+                    continue
+                
+                # End of error section
+                if any(end_pattern in line for end_pattern in [
+                    '> Build failed', 'webpack errors', 'info  -', 'warn  -'
+                ]):
+                    if current_error:
+                        errors.append('\n'.join(current_error))
+                        current_error = []
+                    in_error_section = False
+                    break
+        
+        # Add any remaining error
+        if current_error:
+            errors.append('\n'.join(current_error))
+        
+        return errors
+
+    def detect_infrastructure_errors(self, errors: List[str]) -> List[str]:
+        """
+        Detect infrastructure-related errors (missing dependencies, etc.)
+        
+        Args:
+            errors: List of error strings
+            
+        Returns:
+            List of infrastructure error strings
+        """
+        infrastructure_errors = []
+        
+        for error in errors:
+            error_lower = error.lower()
+            
+            # Check for dependency issues
+            if any(keyword in error_lower for keyword in [
+                'module not found', 'cannot resolve', 'package not found',
+                'dependency', 'npm error', 'yarn error', 'pnpm error',
+                'missing dependency', 'failed to install'
+            ]):
+                infrastructure_errors.append(error)
+            
+            # Check for build tool issues
+            elif any(keyword in error_lower for keyword in [
+                'webpack', 'next/config', 'build failed',
+                'compilation error', 'bundler error'
+            ]):
+                infrastructure_errors.append(error)
+        
+        return infrastructure_errors
+
+    def fix_infrastructure_errors(self, infrastructure_errors: List[str]) -> bool:
+        """
+        Fix infrastructure-related errors.
+        
+        Args:
+            infrastructure_errors: List of infrastructure error strings
+            
+        Returns:
+            True if fixes were applied successfully
+        """
+        import subprocess
+        import os
+        
+        app_path = self.get_app_path()
+        
+        try:
+            # Change to app directory
+            original_dir = os.getcwd()
+            os.chdir(app_path)
+            
+            # Try npm install to fix dependency issues
+            print("🔧 Running npm install to fix dependencies...")
+            result = subprocess.run(['npm', 'install'], 
+                                  capture_output=True, text=True, timeout=120)
+            
+            if result.returncode == 0:
+                print("✅ npm install completed successfully")
+                return True
+            else:
+                print(f"❌ npm install failed: {result.stderr}")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Error fixing infrastructure: {e}")
+            return False
+        finally:
+            os.chdir(original_dir)
+
     def auto_fix_build_errors(self):
         """Automatically fix build errors using diff-based approach with enhanced error handling."""
         max_attempts = 3

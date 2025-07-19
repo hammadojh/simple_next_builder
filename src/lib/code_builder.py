@@ -598,6 +598,9 @@ class CodeBuilder:
             if edit_ops:
                 edit_ops.sort(key=lambda x: x[1][0], reverse=True)  # Sort by start_line descending
                 
+                # Detect and remove duplicate content edits
+                edit_ops = self._remove_duplicate_edits(filename, edit_ops)
+                
                 for content, (start_line, end_line) in edit_ops:
                     try:
                         self.edit_file(filename, content, start_line, end_line)
@@ -608,9 +611,12 @@ class CodeBuilder:
         
         return new_files_count, edited_files_count
     
-    def build(self) -> None:
+    def build(self) -> bool:
         """
         Parse the input file and apply all operations (create new files and edit existing ones).
+        
+        Returns:
+            True if all operations were processed successfully, False otherwise
         """
         print(f"📂 Reading input from: {self.input_file}")
         print(f"📁 Output directory: {self.output_dir}")
@@ -621,7 +627,7 @@ class CodeBuilder:
         
         if not operations:
             print("❌ No operations to perform")
-            return
+            return False
             
         # Create the output directory if it doesn't exist
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -634,6 +640,84 @@ class CodeBuilder:
         print(f"✅ Successfully processed {len(operations)} operations:")
         print(f"   📄 Created {new_files_count} new files")
         print(f"   ✏️  Edited {edited_files_count} existing files")
+        
+        return True  # Return success status
+
+    def _remove_duplicate_edits(self, filename: str, edit_ops: List[Tuple[str, Tuple[int, int]]]) -> List[Tuple[str, Tuple[int, int]]]:
+        """
+        Remove duplicate edits that would insert the same content multiple times.
+        
+        Args:
+            filename: The file being edited
+            edit_ops: List of (content, (start_line, end_line)) tuples
+            
+        Returns:
+            Filtered list without duplicates
+        """
+        if len(edit_ops) <= 1:
+            return edit_ops
+        
+        # Read current file content to check for existing content
+        target_file = self.output_dir / filename
+        existing_content = ""
+        if target_file.exists():
+            try:
+                existing_content = target_file.read_text()
+            except Exception:
+                existing_content = ""
+        
+        filtered_ops = []
+        seen_content = set()
+        
+        for content, line_range in edit_ops:
+            # Normalize content for comparison (remove extra whitespace)
+            normalized_content = ' '.join(content.split())
+            
+            # Check if this content already exists in the file
+            if normalized_content in ' '.join(existing_content.split()):
+                print(f"⚠️  Skipping duplicate content in {filename}: '{content[:50]}...'")
+                continue
+            
+            # Check if we've already seen this exact content in our edits
+            if normalized_content in seen_content:
+                print(f"⚠️  Skipping duplicate edit in {filename}: '{content[:50]}...'")
+                continue
+            
+            # Check for function/variable redefinition patterns
+            if self._is_function_redefinition(content, existing_content):
+                print(f"⚠️  Skipping function redefinition in {filename}: '{content[:50]}...'")
+                continue
+            
+            seen_content.add(normalized_content)
+            filtered_ops.append((content, line_range))
+        
+        if len(filtered_ops) != len(edit_ops):
+            removed_count = len(edit_ops) - len(filtered_ops)
+            print(f"🔧 Removed {removed_count} duplicate edit(s) for {filename}")
+        
+        return filtered_ops
+    
+    def _is_function_redefinition(self, new_content: str, existing_content: str) -> bool:
+        """Check if the new content would create a function/variable redefinition."""
+        import re
+        
+        # Extract function/variable names from new content
+        function_patterns = [
+            r'const\s+(\w+)\s*=',
+            r'let\s+(\w+)\s*=', 
+            r'var\s+(\w+)\s*=',
+            r'function\s+(\w+)\s*\(',
+            r'(\w+)\s*:\s*\([^)]*\)\s*=>'  # Arrow functions with type annotations
+        ]
+        
+        for pattern in function_patterns:
+            matches = re.findall(pattern, new_content)
+            for match in matches:
+                # Check if this name already exists in the file
+                if re.search(rf'\b{re.escape(match)}\b', existing_content):
+                    return True
+        
+        return False
 
 
 def main():
