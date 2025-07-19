@@ -1,0 +1,76 @@
+Here's a basic file structure setup for a NextJS application using the specified syntax format:
+
+<new filename="app/page.tsx">
+"use client"
+import Link from 'next/link'
+
+export default function HomePage() {
+  return (
+    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100">
+      <h1 className="text-4xl font-bold text-gray-800">Welcome to the NextJS App</h1>
+      <Link href="/about" className="mt-4 bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+        Learn More
+      </Link>
+    </div>
+  )
+}
+</new>
+
+<new filename="app/about/page.tsx">
+"use client"
+import Link from 'next/link'
+
+export default function AboutPage() {
+  return (
+    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100">
+      <h1 className="text-4xl font-bold text-gray-800">About Us</h1>
+      <p className="mt-2 text-lg text-gray-600">This is the about page of our NextJS application.</p>
+      <Link href="/" className="mt-4 bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+        Go Back Home
+      </Link>
+    </div>
+  )
+}
+</new>
+
+<new filename="components/Navigation.tsx">
+"use client"
+import Link from 'next/link'
+
+export default function Navigation() {
+  return (
+    <nav className="bg-gray-800 p-4">
+      <div className="container mx-auto flex justify-between">
+        <Link href="/" className="text-white text-lg">Home</Link>
+        <Link href="/about" className="text-white text-lg">About</Link>
+      </div>
+    </nav>
+  )
+}
+</new>
+
+<new filename="styles/globals.css">
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+</new>
+
+<new filename="utils/helpers.ts">
+export const formatDate = (date: Date): string => {
+  return date.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  })
+}
+</new>
+
+This setup includes:
+
+- `app/page.tsx`: The main page component for the application.
+- `app/about/page.tsx`: An additional page for the "About" section.
+- `components/Navigation.tsx`: A navigation component for managing links.
+- `styles/globals.css`: A global stylesheet utilizing Tailwind CSS.
+- `utils/helpers.ts`: A utility file with a helper function for formatting dates.
+
+These files demonstrate a basic structure for a NextJS application with TypeScript, utilizing modern best practices in code organization and styling.
