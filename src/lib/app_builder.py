@@ -963,8 +963,8 @@ Generate a unified diff that implements the requested changes with proper contex
         """
         Get context by directly reading key files with enhanced structural analysis.
         
-        This replaces the complex indexing approach with simple direct file reading
-        plus code structure analysis for better AI understanding.
+        🔧 FIXED: No longer includes full file content to prevent massive token consumption.
+        Instead provides structural summaries and relevant excerpts.
         """
         print(f"📁 Getting direct file context from: {app_directory}")
         
@@ -981,6 +981,8 @@ Generate a unified diff that implements the requested changes with proper contex
         # Read the key files directly with structural analysis
         key_files = ["app/page.tsx", "app/layout.tsx", "app/globals.css", "package.json"]
         files_found = 0
+        total_chars = 0  # Track context size
+        MAX_CONTEXT_CHARS = 50000  # Limit to ~12-15k tokens
         
         for file_path in key_files:
             full_path = app_path / file_path
@@ -1014,9 +1016,36 @@ Generate a unified diff that implements the requested changes with proper contex
                         usestate_vars = re.findall(r'const\s+\[(\w+),\s*set\w+\]\s*=\s*useState', content)
                         if usestate_vars:
                             context_parts.append(f"  🎛️ State Variables: {', '.join(usestate_vars)}")
+                        
+                        # Extract imports for better context
+                        imports = re.findall(r'import.*from\s+[\'"]([^\'"]+)[\'"]', content)
+                        if imports:
+                            context_parts.append(f"  📥 Key Imports: {', '.join(set(imports))}")
+                        
+                        # 🔧 SMART EXCERPT: Include only relevant parts, not full content
+                        context_parts.append("\n📝 RELEVANT EXCERPT:")
+                        excerpt = self._get_relevant_excerpt(content, user_request, max_lines=20)
+                        context_parts.append(excerpt)
+                        
+                    else:
+                        # For non-code files (CSS, JSON), include a smaller excerpt
+                        context_parts.append("📝 FILE EXCERPT:")
+                        lines = content.split('\n')
+                        if len(lines) <= 10:
+                            context_parts.append(content)  # Small files can be included fully
+                        else:
+                            # Include first and last few lines for context
+                            excerpt_lines = lines[:5] + ["... (content truncated) ..."] + lines[-3:]
+                            context_parts.append('\n'.join(excerpt_lines))
                     
-                    context_parts.append("\n📝 FULL CONTENT:")
-                    context_parts.append(content)
+                    # Check if we're approaching context limit
+                    current_context = "\n".join(context_parts)
+                    total_chars = len(current_context)
+                    
+                    if total_chars > MAX_CONTEXT_CHARS:
+                        context_parts.append(f"\n⚠️ Context limit reached ({total_chars:,} chars) - truncating remaining files")
+                        break
+                        
                     files_found += 1
                     
                 except Exception as e:
@@ -1026,8 +1055,72 @@ Generate a unified diff that implements the requested changes with proper contex
             context_parts.append("❌ No key files found in the app directory")
             return ""
         
-        print(f"✅ Retrieved {files_found} files directly with structural analysis")
+        # Add context size information
+        final_context = "\n".join(context_parts)
+        estimated_tokens = len(final_context) // 4  # Rough estimate: 4 chars per token
+        context_parts.append(f"\n📊 Context size: {len(final_context):,} characters (~{estimated_tokens:,} tokens)")
+        
+        print(f"✅ Retrieved {files_found} files with structural analysis")
+        print(f"📊 Context size: {len(final_context):,} characters (~{estimated_tokens:,} tokens)")
+        
         return "\n".join(context_parts)
+    
+    def _get_relevant_excerpt(self, content: str, user_request: str, max_lines: int = 20) -> str:
+        """
+        Extract relevant excerpt from file content based on user request.
+        
+        Args:
+            content: Full file content
+            user_request: User's request to find relevant parts
+            max_lines: Maximum lines to include
+            
+        Returns:
+            Relevant excerpt of the file
+        """
+        lines = content.split('\n')
+        
+        # If file is small enough, return first portion
+        if len(lines) <= max_lines:
+            return content
+        
+        # Look for keywords from user request in the code
+        request_keywords = user_request.lower().split()
+        relevant_lines = []
+        
+        # Find lines that contain request keywords or are structurally important
+        for i, line in enumerate(lines):
+            line_lower = line.lower()
+            
+            # Always include imports, exports, and function declarations
+            if any(keyword in line for keyword in ['import ', 'export ', 'function ', 'const ', 'interface ', 'type ']):
+                relevant_lines.append((i, line))
+            # Include lines that match user request keywords
+            elif any(keyword in line_lower for keyword in request_keywords if len(keyword) > 2):
+                relevant_lines.append((i, line))
+        
+        # If we found relevant lines, return them with context
+        if relevant_lines:
+            # Sort by line number and take first max_lines
+            relevant_lines.sort()
+            selected_lines = relevant_lines[:max_lines]
+            
+            # Add some context around important lines
+            result_lines = []
+            for line_num, line_content in selected_lines:
+                # Add a bit of context (line numbers for reference)
+                result_lines.append(f"{line_num + 1:3}: {line_content}")
+            
+            return '\n'.join(result_lines)
+        
+        # Fallback: return first max_lines of the file
+        excerpt_lines = []
+        for i in range(min(max_lines, len(lines))):
+            excerpt_lines.append(f"{i + 1:3}: {lines[i]}")
+        
+        if len(lines) > max_lines:
+            excerpt_lines.append(f"... ({len(lines) - max_lines} more lines)")
+        
+        return '\n'.join(excerpt_lines)
 
     def analyze_file_with_line_count(self, file_path: str, relative_path: str) -> str:
         """
