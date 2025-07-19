@@ -1145,6 +1145,8 @@ Examples:
   python src/main.py --idea "Calculator app" --name "my-calculator" --port 3001
   python src/main.py --edit myapp2 --idea "Add a reset button"
   python src/main.py --interactive
+  python src/main.py --idea "Complex e-commerce site" --coordinator
+  python src/main.py --idea "Simple counter" --no-coordinator
         """
     )
     
@@ -1156,12 +1158,20 @@ Examples:
     parser.add_argument("--edit", help="Edit existing app by name (e.g., myapp2)")
     parser.add_argument("--list", action="store_true", help="List existing NextJS apps")
     parser.add_argument("--interactive", "-i", action="store_true", help="Interactive mode")
+    parser.add_argument("--coordinator", action="store_true", default=True, help="Enable LLM coordinator (default: enabled)")
+    parser.add_argument("--no-coordinator", action="store_true", help="Disable LLM coordinator and use traditional approach")
     
     args = parser.parse_args()
     
     try:
         # Initialize the master builder
         master = MasterBuilder()
+        
+        # Configure coordinator mode based on arguments
+        if args.no_coordinator:
+            master.app_builder.set_coordinator_mode(False)
+        elif args.coordinator:
+            master.app_builder.set_coordinator_mode(True)
         
         # Handle list mode
         if args.list:
