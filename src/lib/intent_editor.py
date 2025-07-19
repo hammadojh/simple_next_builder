@@ -72,19 +72,27 @@ class IntentBasedEditor:
         """Apply all intents for a single file."""
         target_file = self.repo_root / file_path
         
+        # Check if any intent is for creating a new file
+        creation_intents = [intent for intent in intents if intent.action == "insert" and intent.target == ""]
+        
         if not target_file.exists():
-            # Check if any intent is for creating a new file
-            creation_intents = [intent for intent in intents if intent.action == "insert" and intent.target == ""]
             if creation_intents:
                 # Use the first creation intent to create the file
                 creation_intent = creation_intents[0]
                 print(f"📄 Creating new file: {file_path}")
                 target_file.parent.mkdir(parents=True, exist_ok=True)
                 target_file.write_text(creation_intent.replacement)
-                return True, f"Created new file: {file_path}"
+                
+                # Remove the creation intent from the list since it's handled
+                intents = [intent for intent in intents if intent != creation_intent]
+                
+                # If there are remaining intents, continue processing them
+                if not intents:
+                    return True, f"Created new file: {file_path}"
             else:
                 return False, f"File not found: {file_path}"
         
+        # If file was just created or already exists, continue with remaining intents
         try:
             # Read current content
             with open(target_file, 'r') as f:
@@ -92,8 +100,11 @@ class IntentBasedEditor:
             
             current_content = original_content
             
-            # Apply each intent in order
+            # Apply each remaining intent in order
             for intent in intents:
+                if intent.action == "insert" and intent.target == "":
+                    # Skip additional creation intents for existing file
+                    continue
                 current_content = self._apply_single_intent(current_content, intent)
             
             # Write back if changed
@@ -240,9 +251,16 @@ def parse_ai_intent_response(ai_response: str) -> List[EditIntent]:
             {
                 "file_path": "app/page.tsx",
                 "action": "replace",
-                "target": "className=\"bg-blue-500\"",
-                "replacement": "className=\"bg-blue-700\"",
-                "context": "button styling"
+                "target": "className=\"bg-blue-500 hover:bg-blue-600\"",
+                "replacement": "className=\"bg-blue-700 hover:bg-blue-800\"",
+                "context": "making button darker blue"
+            },
+            {
+                "file_path": "app/layout.tsx", 
+                "action": "replace",
+                "target": "className=\"bg-gray-50\"",
+                "replacement": "className=\"bg-gray-900 text-white\"",
+                "context": "changing to dark theme"
             }
         ]
     }
@@ -266,11 +284,24 @@ def parse_ai_intent_response(ai_response: str) -> List[EditIntent]:
         
         if 'intents' in data:
             for intent_data in data['intents']:
+                # Handle both "replacement" and "content" fields
+                replacement = intent_data.get('replacement', '')
+                if not replacement:
+                    replacement = intent_data.get('content', '')
+                
+                # Convert "create" action to "insert" with empty target
+                action = intent_data['action']
+                target = intent_data.get('target', '')
+                
+                if action == 'create':
+                    action = 'insert'
+                    target = ''  # Empty target for file creation
+                
                 intent = EditIntent(
                     file_path=intent_data['file_path'],
-                    action=intent_data['action'],
-                    target=intent_data['target'],
-                    replacement=intent_data.get('replacement', ''),
+                    action=action,
+                    target=target,
+                    replacement=replacement,
                     context=intent_data.get('context', ''),
                     line_number=intent_data.get('line_number')
                 )
@@ -278,6 +309,9 @@ def parse_ai_intent_response(ai_response: str) -> List[EditIntent]:
     
     except json.JSONDecodeError as e:
         print(f"❌ Failed to parse AI intent JSON: {e}")
+        print(f"Raw response: {ai_response[:200]}...")
+    except KeyError as e:
+        print(f"❌ Missing required field in AI intent: {e}")
         print(f"Raw response: {ai_response[:200]}...")
     except Exception as e:
         print(f"❌ Error parsing AI intent: {e}")
@@ -292,6 +326,12 @@ def get_intent_based_prompt() -> str:
     """
     return """
 You are editing a NextJS application. Instead of generating diffs, please provide structured editing intents in JSON format.
+
+🔗 CRITICAL: NEXTJS 13+ LINK COMPONENT USAGE:
+⚠️  NEVER nest <a> tags inside <Link> components - this causes runtime errors!
+
+✅ CORRECT: <Link href="/path" className="styles">Text</Link>
+❌ WRONG: <Link href="/path"><a className="styles">Text</a></Link>
 
 RESPOND WITH JSON IN THIS EXACT FORMAT:
 
@@ -330,4 +370,4 @@ ADVANTAGES OF THIS APPROACH:
 ✅ Less chance of syntax errors
 
 Focus on making precise, minimal changes. Always include context to explain the purpose of each change.
-""" 
+"""

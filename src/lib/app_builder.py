@@ -172,6 +172,25 @@ class MultiLLMAppBuilder:
 - Import from `'next/link'` for navigation
 - Use proper file naming: `page.tsx` for pages, `layout.tsx` for layouts
 
+🔗 CRITICAL: NEXTJS 13+ LINK COMPONENT USAGE:
+⚠️  NEVER nest <a> tags inside <Link> components - this causes runtime errors!
+
+✅ CORRECT NextJS 13+ Pattern:
+<Link href="/products" className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+  Browse Products
+</Link>
+
+❌ WRONG Pattern (causes "Invalid <Link> with <a> child" error):
+<Link href="/products">
+  <a className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">Browse Products</a>
+</Link>
+
+🔍 LINK COMPONENT RULES:
+1. Put className directly on <Link>, NOT on nested <a>
+2. Put text content directly inside <Link>
+3. Link automatically renders as an anchor tag
+4. Use onClick handlers directly on <Link> if needed
+
 🎨 STYLING REQUIREMENTS:
 - Use ONLY standard Tailwind CSS classes
 - NO custom CSS classes or inline styles
@@ -328,6 +347,7 @@ Focus on delivering exactly what was requested - simple for simple requests, com
         Returns:
             Tuple of (is_valid, detailed_feedback)
         """
+        import re
         issues = []
         
         # Check for required syntax tags based on context
@@ -432,10 +452,19 @@ Focus on delivering exactly what was requested - simple for simple requests, com
         jsx_content = '\n'.join(added_lines)
         
         if '<' in jsx_content and '>' in jsx_content:
-            # Basic JSX validation
-            open_tags = jsx_content.count('<')
-            close_tags = jsx_content.count('>')
-            if abs(open_tags - close_tags) > 2:  # Allow some variance for partial diff context
+            # More intelligent JSX validation
+            # Count actual JSX tags (not operators like < or >)
+            jsx_tags = re.findall(r'<\s*[a-zA-Z][^>]*>', jsx_content)
+            self_closing_tags = re.findall(r'<\s*[a-zA-Z][^>]*\/>', jsx_content)
+            closing_tags = re.findall(r'<\s*\/[a-zA-Z][^>]*>', jsx_content)
+            
+            # Self-closing tags are balanced, so don't count them
+            open_count = len(jsx_tags) - len(self_closing_tags)
+            close_count = len(closing_tags)
+            
+            # Only flag if there's a significant imbalance (more than 5 difference)
+            # This allows for partial diffs and context lines
+            if abs(open_count - close_count) > 5:
                 issues.append("WARNING: Potential JSX structure issues in diff")
         
         return issues
@@ -788,6 +817,12 @@ You MUST respond with a UNIFIED DIFF in this EXACT format:
 + new line to add
  unchanged context line
 *** End Patch
+
+🔗 CRITICAL: NEXTJS 13+ LINK COMPONENT USAGE:
+⚠️  NEVER nest <a> tags inside <Link> components - this causes runtime errors!
+
+✅ CORRECT: <Link href="/path" className="styles">Text</Link>
+❌ WRONG: <Link href="/path"><a className="styles">Text</a></Link>
 
 KEY REQUIREMENTS:
 1. Use ONLY the unified diff format shown above
@@ -1847,7 +1882,7 @@ Focus on fixing:
 - Import/export problems
 - Type errors"""
 
-        is_valid, response = self.make_openai_request(legacy_fix_prompt, context="create")
+        is_valid, response = self.make_openai_request(legacy_fix_prompt, context="edit_fallback")
         
         if not is_valid:
             return False
@@ -1935,6 +1970,194 @@ Focus on fixing:
         except Exception as e:
             print(f"❌ Error making AI request: {str(e)}")
             return False, ""
+
+    def extract_error_files_content(self, build_errors: List[str], app_structure: str) -> str:
+        """
+        Extract content from files mentioned in build errors for better context.
+        
+        Args:
+            build_errors: List of build error messages
+            app_structure: Current app structure context
+            
+        Returns:
+            String containing relevant file contents with error context
+        """
+        try:
+            error_files_content = []
+            app_path = Path(self.get_app_path())
+            
+            # Extract file paths from error messages
+            error_files = set()
+            for error in build_errors:
+                # Common patterns for file paths in NextJS errors
+                import re
+                file_patterns = [
+                    r'\./(app/[^:\s]+)',
+                    r'\./(src/[^:\s]+)',
+                    r'\./(components/[^:\s]+)',
+                    r'\./(lib/[^:\s]+)',
+                    r'/([^/\s]+\.tsx?)',
+                    r'/([^/\s]+\.jsx?)',
+                ]
+                
+                for pattern in file_patterns:
+                    matches = re.findall(pattern, error)
+                    error_files.update(matches)
+            
+            # Read content from error files
+            for file_path in error_files:
+                full_path = app_path / file_path
+                if full_path.exists() and full_path.is_file():
+                    try:
+                        content = full_path.read_text(encoding='utf-8')
+                        error_files_content.append(f"""
+=== {file_path} ===
+{content}
+=== END {file_path} ===
+""")
+                    except Exception as e:
+                        error_files_content.append(f"Error reading {file_path}: {e}")
+            
+            return '\n'.join(error_files_content) if error_files_content else ""
+            
+        except Exception as e:
+            print(f"❌ Error extracting error files content: {e}")
+            return ""
+
+    def get_build_fix_prompt(self, app_structure: str, error_context: str) -> str:
+        """
+        Generate a prompt for fixing build errors using unified diff format.
+        
+        Args:
+            app_structure: Current app structure and context
+            error_context: Build errors and file contents that need fixing
+            
+        Returns:
+            Prompt string for AI to generate fixes
+        """
+        return f"""You are fixing build errors in a NextJS application. Please analyze the errors and generate a unified diff to fix them.
+
+CURRENT APP STRUCTURE:
+{app_structure}
+
+{error_context}
+
+INSTRUCTIONS:
+1. Generate a unified diff using *** Begin Patch / *** End Patch format
+2. Fix ONLY the specific errors mentioned above
+3. Make minimal, surgical changes
+4. Ensure all JSX syntax is correct
+5. Fix import/export issues
+6. Resolve TypeScript type errors
+7. Use exact whitespace and indentation matching
+
+EXAMPLE FORMAT:
+*** Begin Patch
+*** Update File: app/page.tsx
+@@ -10,7 +10,7 @@
+   const [count, setCount] = useState(0)
+ 
+   return (
+-    <div className="container">
++    <div className="container mx-auto">
+       <h1>{{count}}</h1>
+     </div>
+   )
+*** End Patch
+
+Focus on making the minimum changes needed to resolve the build errors."""
+
+    def generate_build_fix_response(self, errors: List[str], app_structure: str) -> str:
+        """
+        Generate build fix instructions based on specific build errors.
+        
+        Args:
+            errors: List of build error messages
+            app_structure: Current app structure context
+            
+        Returns:
+            Fix instructions as a string, or empty string if failed
+        """
+        try:
+            error_context = self.extract_error_files_content(errors, app_structure)
+            prompt = self.get_build_fix_prompt(app_structure, error_context)
+            
+            is_valid, response = self.make_openai_request(prompt, context="edit")
+            
+            if is_valid:
+                return response
+            else:
+                print("❌ Failed to generate valid build fix response")
+                return ""
+                
+        except Exception as e:
+            print(f"❌ Error generating build fix response: {e}")
+            return ""
+
+    def generate_file_rewrite_response(self, file_paths: List[str], errors: List[str], semantic_context: str) -> str:
+        """
+        Generate complete file rewrite instructions.
+        
+        Args:
+            file_paths: List of file paths to rewrite
+            errors: List of current errors
+            semantic_context: Additional context about the changes needed
+            
+        Returns:
+            Rewrite instructions as a string, or empty string if failed
+        """
+        try:
+            # Build context for file rewriting
+            files_content = []
+            app_path = Path(self.get_app_path())
+            
+            for file_path in file_paths:
+                full_path = app_path / file_path
+                if full_path.exists():
+                    try:
+                        content = full_path.read_text()
+                        files_content.append(f"=== {file_path} ===\n{content}\n")
+                    except Exception as e:
+                        files_content.append(f"=== {file_path} ===\nError reading file: {e}\n")
+                else:
+                    files_content.append(f"=== {file_path} ===\nFile does not exist\n")
+            
+            # Create rewrite prompt
+            prompt = f"""You need to completely rewrite the following files to fix build errors.
+
+CURRENT ERRORS:
+{chr(10).join(errors)}
+
+SEMANTIC CONTEXT:
+{semantic_context}
+
+CURRENT FILES:
+{chr(10).join(files_content)}
+
+Please provide complete, corrected file contents using the <new> tag format:
+
+<new filename="path/to/file.tsx">
+Complete corrected file content here
+</new>
+
+Requirements:
+1. Fix ALL the build errors mentioned above
+2. Maintain existing functionality where possible
+3. Use proper NextJS 13+ App Router patterns
+4. Use correct TypeScript types
+5. Follow the coding standards shown in the original files"""
+
+            is_valid, response = self.make_openai_request(prompt, context="create")
+            
+            if is_valid:
+                return response
+            else:
+                print("❌ Failed to generate valid file rewrite response")
+                return ""
+                
+        except Exception as e:
+            print(f"❌ Error generating file rewrite response: {e}")
+            return ""
 
 
 # Backward compatibility alias
