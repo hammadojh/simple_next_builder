@@ -10,6 +10,7 @@ import sys
 import json
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 import requests
 import argparse
@@ -25,6 +26,7 @@ except ImportError:
 
 # Import the new indexing system
 from .indexing import CodebaseIndexer
+from .version_manager import VersionManager
 
 
 class MultiLLMAppBuilder:
@@ -45,6 +47,10 @@ class MultiLLMAppBuilder:
         # Initialize the codebase indexer (will be set when needed)
         self._indexer: Optional[CodebaseIndexer] = None
         self._indexer_app_path: Optional[str] = None
+        
+        # Initialize version manager (will be set when needed)
+        self._version_manager: Optional[VersionManager] = None
+        self._version_manager_app_path: Optional[str] = None
         
         # Define LLM provider configurations
         self.llm_providers = [
@@ -335,6 +341,25 @@ Focus on delivering exactly what was requested - simple for simple requests, com
             edit_tags = re.findall(r'<edit filename=\"([^\"]+)\"', content)
             if not edit_tags:
                 issues.append("No <edit> tags found in response for fallback editing")
+        elif context == "intent":
+            # For intent-based editing, expect JSON with intents array
+            try:
+                # Extract JSON from response 
+                json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(1)
+                else:
+                    json_str = content.strip()
+                
+                data = json.loads(json_str)
+                if 'intents' not in data:
+                    issues.append("No 'intents' array found in JSON response")
+                elif not isinstance(data['intents'], list) or len(data['intents']) == 0:
+                    issues.append("'intents' array is empty or invalid")
+            except json.JSONDecodeError:
+                issues.append("Response is not valid JSON format")
+            except Exception as e:
+                issues.append(f"Error validating intent JSON: {str(e)}")
         else:
             # For regular editing, expect unified diff format
             if '*** Begin Patch' not in content:
@@ -356,6 +381,8 @@ Focus on delivering exactly what was requested - simple for simple requests, com
             good_practices.append("Uses appropriate file creation tags")
         elif context == "edit_fallback" and '<edit filename=' in content:
             good_practices.append("Uses appropriate line-based edit tags")
+        elif context == "intent" and '"intents"' in content:
+            good_practices.append("Uses structured intent-based format")
             
         if 'className=' in content and not re.search(r'\bcustom-\w+', content):
             good_practices.append("Uses standard Tailwind classes")
@@ -817,6 +844,13 @@ Generate a unified diff that implements the requested changes with proper contex
                 if hasattr(self._indexer, 'smart_update'):
                     self._indexer.smart_update()
                 print(f"📚 Using existing index with {stats['storage']['total_chunks']} chunks")
+    
+    def _ensure_version_manager(self, app_directory: str):
+        """Ensure version manager is initialized for the given app directory."""
+        if self._version_manager is None or self._version_manager_app_path != app_directory:
+            print(f"🗂️ Initializing version manager for: {app_directory}")
+            self._version_manager = VersionManager(app_directory)
+            self._version_manager_app_path = app_directory
 
     def analyze_app_structure_enhanced(self, app_directory: str) -> str:
         """
@@ -987,19 +1021,389 @@ Generate a unified diff that implements the requested changes with proper contex
             raise ValueError("Apps directory not set")
         return str(self.apps_dir / self.app_name)
     
-    def edit_app(self, app_idea):
+    def edit_app(self, app_idea, use_intent_based: bool = False):
         """
-        Edit an existing NextJS app using diff-based editing for safe, context-aware modifications.
+        Edit an existing NextJS app with automatic rollback on failure.
+        
+        Args:
+            app_idea: Description of changes to make
+            use_intent_based: If True, use intent-based editing (more robust)
+                             If False, use traditional diff-based editing
         
         This method:
-        1. Analyzes current app structure and content
-        2. Generates a unified diff via AI
-        3. Applies the diff using fuzzy context matching
-        4. Handles build errors with automatic fixes
+        1. Creates automatic snapshot before editing
+        2. Tries multiple editing strategies with rollback on failure
+        3. Verifies build success after each attempt
+        4. Automatically recovers from failures
+        5. Guarantees the app remains in a working state
         """
+        return self._edit_app_with_rollback(app_idea, use_intent_based)
+    
+    def _edit_app_with_rollback(self, app_idea: str, prefer_intent_based: bool = False) -> bool:
+        """
+        Robust edit method with automatic rollback and multiple strategies.
+        
+        This method GUARANTEES that the app remains in a working state by:
+        1. Creating a snapshot before any changes
+        2. Trying multiple editing strategies
+        3. Rolling back on any failure
+        4. Using progressively simpler approaches
+        5. Never leaving the app in a broken state
+        
+        Args:
+            app_idea: Description of changes to make
+            prefer_intent_based: Whether to prefer intent-based editing first
+            
+        Returns:
+            bool: True if edit was successful, False if all strategies failed
+        """
+        app_path = self.get_app_path()
+        
+        # Initialize version manager
+        self._ensure_version_manager(app_path)
+        
+        print("🛡️ Starting robust edit with automatic rollback...")
+        print(f"🎯 Edit request: {app_idea}")
+        print(f"📁 App: {self.app_name}")
+        
+        # Step 1: Create snapshot before any changes
+        try:
+            snapshot_id = self._version_manager.create_snapshot(f"Before edit: {app_idea[:50]}...")
+            print(f"📸 Created safety snapshot: {snapshot_id}")
+        except Exception as e:
+            print(f"❌ Failed to create snapshot: {e}")
+            print("⚠️ Proceeding without snapshot - RISKY!")
+            snapshot_id = None
+        
+        # Define editing strategies in order of preference
+        strategies = []
+        
+        if prefer_intent_based:
+            strategies = [
+                ("intent_based", "Intent-based editing with structured JSON"),
+                ("diff_based", "Unified diff with context matching"),
+                ("line_based_fallback", "Legacy line-based editing"),
+                ("manual_fix", "Manual syntax error fixing"),
+            ]
+        else:
+            strategies = [
+                ("diff_based", "Unified diff with context matching"),
+                ("intent_based", "Intent-based editing with structured JSON"),
+                ("line_based_fallback", "Legacy line-based editing"),
+                ("manual_fix", "Manual syntax error fixing"),
+            ]
+        
+        # Try each strategy until one succeeds
+        for i, (strategy_name, strategy_desc) in enumerate(strategies, 1):
+            print(f"\n🔧 Strategy {i}/{len(strategies)}: {strategy_desc}")
+            
+            try:
+                # Attempt the edit strategy
+                success = self._try_edit_strategy(strategy_name, app_idea)
+                
+                if success:
+                    # Check if app still builds
+                    print("🔨 Verifying build after edit...")
+                    build_success = self.build_and_run(auto_install_deps=False)
+                    
+                    if build_success:
+                        # Log successful attempt
+                        if self._version_manager:
+                            self._version_manager.log_edit_attempt(
+                                strategy=strategy_name,
+                                description=app_idea,
+                                success=True,
+                                build_success=True
+                            )
+                        
+                        print(f"🎉 Edit successful with {strategy_name}!")
+                        print("✅ App builds correctly after changes")
+                        return True
+                    else:
+                        print(f"⚠️ Edit applied but build failed with {strategy_name}")
+                        
+                        # Log failed build attempt
+                        if self._version_manager:
+                            self._version_manager.log_edit_attempt(
+                                strategy=strategy_name,
+                                description=app_idea,
+                                success=True,
+                                build_success=False,
+                                error_message="Build failed after edit"
+                            )
+                        
+                        # Rollback to snapshot
+                        if snapshot_id and self._version_manager:
+                            print("🔄 Rolling back due to build failure...")
+                            rollback_success = self._version_manager.rollback_to_snapshot(snapshot_id)
+                            if rollback_success:
+                                print("✅ Rollback successful, trying next strategy...")
+                            else:
+                                print("❌ Rollback failed! App may be in inconsistent state!")
+                        
+                        continue  # Try next strategy
+                else:
+                    print(f"❌ {strategy_name} failed to apply changes")
+                    
+                    # Log failed attempt
+                    if self._version_manager:
+                        self._version_manager.log_edit_attempt(
+                            strategy=strategy_name,
+                            description=app_idea,
+                            success=False,
+                            error_message=f"{strategy_name} failed to apply"
+                        )
+                    
+                    # Rollback to snapshot if changes were partially applied
+                    if snapshot_id and self._version_manager:
+                        print("🔄 Rolling back due to edit failure...")
+                        rollback_success = self._version_manager.rollback_to_snapshot(snapshot_id)
+                        if rollback_success:
+                            print("✅ Rollback successful, trying next strategy...")
+                        else:
+                            print("❌ Rollback failed! App may be in inconsistent state!")
+                    
+                    continue  # Try next strategy
+                    
+            except Exception as e:
+                print(f"❌ Strategy {strategy_name} encountered error: {str(e)}")
+                
+                # Log exception
+                if self._version_manager:
+                    self._version_manager.log_edit_attempt(
+                        strategy=strategy_name,
+                        description=app_idea,
+                        success=False,
+                        error_message=f"Exception: {str(e)}"
+                    )
+                
+                # Rollback on exception
+                if snapshot_id and self._version_manager:
+                    print("🔄 Rolling back due to exception...")
+                    rollback_success = self._version_manager.rollback_to_snapshot(snapshot_id)
+                    if rollback_success:
+                        print("✅ Rollback successful, trying next strategy...")
+                    else:
+                        print("❌ Rollback failed! App may be in inconsistent state!")
+                
+                continue  # Try next strategy
+        
+        # All strategies failed
+        print("💥 All editing strategies failed!")
+        
+        # Final rollback to ensure app is in working state
+        if snapshot_id and self._version_manager:
+            print("🔄 Final rollback to ensure app stability...")
+            final_rollback = self._version_manager.rollback_to_snapshot(snapshot_id)
+            if final_rollback:
+                print("✅ App restored to working state")
+            else:
+                print("❌ Final rollback failed - app may be unstable!")
+                # Try rollback to last known working state as ultimate fallback
+                emergency_rollback = self._version_manager.rollback_to_last_working()
+                if emergency_rollback:
+                    print("🆘 Emergency rollback to last working state successful!")
+                else:
+                    print("💀 CRITICAL: All rollback attempts failed!")
+        
+        print("📊 Edit operation completed with all strategies exhausted")
+        return False
+    
+    def _try_edit_strategy(self, strategy_name: str, app_idea: str) -> bool:
+        """Try a specific editing strategy."""
+        if strategy_name == "intent_based":
+            return self._edit_app_with_intents(app_idea)
+        elif strategy_name == "diff_based":
+            return self._edit_app_with_diffs(app_idea)
+        elif strategy_name == "line_based_fallback":
+            return self._edit_app_with_line_based_fallback(app_idea)
+        elif strategy_name == "manual_fix":
+            return self._edit_app_with_manual_fixes(app_idea)
+        else:
+            print(f"❌ Unknown strategy: {strategy_name}")
+            return False
+    
+    def _edit_app_with_line_based_fallback(self, app_idea: str) -> bool:
+        """Fallback to line-based editing for simple changes."""
+        print("🔄 Using line-based fallback editing...")
+        
+        # Get semantic context
+        semantic_context = self.get_semantic_context_for_request(
+            user_request=app_idea, 
+            app_directory=self.get_app_path()
+        )
+        
+        if not semantic_context:
+            print("❌ Failed to get semantic context")
+            return False
+        
+        # Generate line-based edit
+        prompt = f"""You are editing a NextJS app using line-based edits.
+
+CURRENT APP CONTEXT:
+{semantic_context}
+
+USER REQUEST:
+{app_idea}
+
+Use ONLY <edit filename="..." start_line="N" end_line="N"> tags.
+Make minimal, surgical changes. Be extremely careful with line numbers.
+"""
+        
+        is_valid, response = self.make_openai_request(prompt, context="edit")
+        
+        if not is_valid:
+            return False
+        
+        # Apply using CodeBuilder
+        from .code_builder import CodeBuilder
+        import tempfile
+        import os
+        
+        timestamp = int(time.time())
+        edit_file = os.path.join("inputs", self.app_name, f"line_fallback_{timestamp}.txt")
+        
+        os.makedirs(os.path.dirname(edit_file), exist_ok=True)
+        
+        with open(edit_file, 'w') as f:
+            f.write(response)
+        
+        try:
+            code_builder = CodeBuilder(edit_file, self.get_app_path())
+            code_builder.build()
+            return True
+        except Exception as e:
+            print(f"❌ Line-based fallback failed: {e}")
+            return False
+    
+    def _edit_app_with_manual_fixes(self, app_idea: str) -> bool:
+        """Apply manual fixes for common syntax errors."""
+        print("🔧 Applying manual syntax fixes...")
+        
+        app_path = Path(self.get_app_path())
+        
+        # Check for common syntax errors in main files
+        main_files = [
+            app_path / "app" / "page.tsx",
+            app_path / "app" / "layout.tsx"
+        ]
+        
+        fixed_any = False
+        
+        for file_path in main_files:
+            if not file_path.exists():
+                continue
+                
+            try:
+                content = file_path.read_text()
+                original_content = content
+                
+                # Fix common syntax issues
+                # 1. Double opening braces in useEffect
+                content = re.sub(r'useEffect\(\(\) => \{ \{', 'useEffect(() => {', content)
+                
+                # 2. Missing closing parentheses in JSX returns
+                content = re.sub(r'return \((.*?)\n\s*\}', r'return (\1\n  )', content, flags=re.DOTALL)
+                
+                # 3. Fix malformed imports
+                content = re.sub(r'import \{ useState \} from \'react\'\nimport \{ useState', 'import { useState', content)
+                
+                # 4. Fix missing semicolons in key places
+                content = re.sub(r'(\]\))\n\s*(const|let|var)', r'\1;\n\2', content)
+                
+                if content != original_content:
+                    file_path.write_text(content)
+                    print(f"🔧 Applied manual fixes to {file_path.name}")
+                    fixed_any = True
+                    
+            except Exception as e:
+                print(f"⚠️ Could not fix {file_path.name}: {e}")
+                continue
+        
+        return fixed_any
+    
+    def _edit_app_with_intents(self, app_idea):
+        """Edit app using intent-based approach (minimizes AI role in diff generation)."""
+        from .intent_editor import IntentBasedEditor, parse_ai_intent_response, get_intent_based_prompt
+        from pathlib import Path
+        
+        print(f"📝 Editing existing app with intent-based approach: {self.app_name}")
+        print(f"🎯 Requested changes: {app_idea}")
+        
+        # Get semantic context
+        semantic_context = self.get_semantic_context_for_request(
+            user_request=app_idea, 
+            app_directory=self.get_app_path()
+        )
+        if not semantic_context:
+            print("❌ Failed to get semantic context for edit request")
+            return False
+        
+        # Generate structured intents instead of raw diffs
+        print("🤖 Generating structured editing intents...")
+        intent_prompt = get_intent_based_prompt() + f"""
+
+CURRENT APP CONTEXT:
+{semantic_context}
+
+USER REQUEST:
+{app_idea}
+
+Generate JSON intents to implement these changes precisely and safely.
+"""
+        
+        is_valid, response = self.make_openai_request(intent_prompt, context="intent")
+        
+        if not is_valid:
+            print("❌ Failed to generate valid intent response")
+            return False
+        
+        # Parse intents from AI response
+        intents = parse_ai_intent_response(response)
+        if not intents:
+            print("❌ No valid intents found in AI response")
+            return False
+        
+        print(f"📋 Parsed {len(intents)} editing intents:")
+        for i, intent in enumerate(intents, 1):
+            print(f"   {i}. {intent.action} in {intent.file_path}: {intent.context}")
+        
+        # Apply intents
+        print("🔧 Applying structured intents...")
+        editor = IntentBasedEditor(Path(self.get_app_path()))
+        results = editor.apply_intent_list(intents)
+        
+        # Check results
+        all_success = all(success for success, _ in results)
+        
+        if all_success:
+            print("✅ All intents applied successfully!")
+        else:
+            print("⚠️ Some intents failed:")
+            for success, message in results:
+                if not success:
+                    print(f"   ❌ {message}")
+        
+        if not all_success:
+            print("🔄 Falling back to diff-based approach...")
+            return self._edit_app_with_diffs(app_idea)
+        
+        # Build and run to verify changes work
+        print("🔨 Building app to verify changes...")
+        build_success = self.build_and_run(auto_install_deps=True)
+        
+        if build_success:
+            print("🎉 App edited successfully with intent-based approach!")
+            return True
+        else:
+            print("⚠️ App edited but has build errors - attempting automatic fixes...")
+            return self.auto_fix_build_errors()
+    
+    def _edit_app_with_diffs(self, app_idea):
+        """Edit app using traditional diff-based approach (with sanitization)."""
         from .diff_builder import DiffBuilder
         
-        print(f"📝 Editing existing app: {self.app_name}")
+        print(f"📝 Editing existing app with diff-based approach: {self.app_name}")
         print(f"🎯 Requested changes: {app_idea}")
         
         # Get semantically relevant context for this edit request

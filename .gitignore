@@ -50,6 +50,8 @@ logs/
 debug_responses/
 docs/
 *.log
+*.patch
+*.backup
 
 #store
 .chunk_store/

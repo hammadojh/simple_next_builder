@@ -35,6 +35,192 @@ class PatchResult:
     failed_hunks: List[DiffHunk] = None
 
 
+class DiffSanitizer:
+    """Sanitizes and fixes malformed AI-generated diffs."""
+    
+    def __init__(self, repo_root: Path):
+        self.repo_root = Path(repo_root)
+    
+    def sanitize_patch(self, patch_text: str) -> str:
+        """
+        Clean up and fix malformed AI-generated diffs.
+        
+        Args:
+            patch_text: Raw AI-generated patch
+            
+        Returns:
+            Sanitized patch with proper formatting
+        """
+        print("🧹 Sanitizing AI-generated diff...")
+        
+        lines = patch_text.strip().split('\n')
+        sanitized_lines = []
+        current_file = None
+        in_hunk = False
+        hunk_header_line = None
+        
+        for i, line in enumerate(lines):
+            # Preserve sentinels and file headers
+            if line.startswith('*** Begin Patch') or line.startswith('*** End Patch'):
+                sanitized_lines.append(line)
+                continue
+                
+            if line.startswith('*** Update File:'):
+                current_file = line.split(':', 1)[1].strip()
+                sanitized_lines.append(line)
+                in_hunk = False
+                continue
+            
+            # Handle hunk headers
+            if line.startswith('@@'):
+                in_hunk = True
+                hunk_header_line = i
+                sanitized_lines.append(line)
+                
+                # Try to fix the hunk content that follows
+                fixed_hunk_lines = self._fix_hunk_content(
+                    lines[i+1:], current_file, line
+                )
+                sanitized_lines.extend(fixed_hunk_lines)
+                
+                # Skip the original hunk content since we've replaced it
+                j = i + 1
+                while j < len(lines) and not lines[j].startswith('@@') and not lines[j].startswith('***'):
+                    j += 1
+                i = j - 1  # Will be incremented by for loop
+                in_hunk = False
+                continue
+            
+            # If we're not in a hunk, just copy the line
+            if not in_hunk:
+                sanitized_lines.append(line)
+        
+        result = '\n'.join(sanitized_lines)
+        print("✅ Diff sanitization complete")
+        return result
+    
+    def _fix_hunk_content(self, hunk_lines: List[str], file_path: str, hunk_header: str) -> List[str]:
+        """
+        Fix malformed hunk content by adding proper +/- prefixes.
+        
+        This method reads the actual file and intelligently determines
+        what should be removed vs added based on the hunk header and content.
+        """
+        print(f"🔧 Fixing hunk content for {file_path}")
+        
+        # Extract hunk info from header
+        match = re.match(r'@@ -(\d+),(\d+) \+(\d+),(\d+) @@', hunk_header)
+        if not match:
+            print(f"⚠️ Invalid hunk header: {hunk_header}")
+            return hunk_lines
+        
+        old_start, old_count, new_start, new_count = map(int, match.groups())
+        
+        # Read the actual file to understand what should be changed
+        target_file = self.repo_root / file_path
+        if not target_file.exists():
+            print(f"⚠️ Target file doesn't exist: {file_path}")
+            return hunk_lines
+        
+        try:
+            with open(target_file, 'r') as f:
+                file_lines = f.readlines()
+        except Exception as e:
+            print(f"⚠️ Error reading {file_path}: {e}")
+            return hunk_lines
+        
+        # Get the relevant section from the file
+        old_section_start = old_start - 1  # Convert to 0-based
+        old_section_end = old_section_start + old_count
+        old_section = [line.rstrip('\n') for line in file_lines[old_section_start:old_section_end]]
+        
+        # Process hunk lines and determine what's what
+        fixed_lines = []
+        hunk_content = []
+        
+        # Stop at next hunk or end marker
+        for line in hunk_lines:
+            if line.startswith('@@') or line.startswith('***'):
+                break
+            hunk_content.append(line)
+        
+        # If lines already have proper prefixes, use them as-is
+        has_prefixes = any(line.startswith(('+', '-', ' ')) for line in hunk_content if line.strip())
+        
+        if has_prefixes:
+            print("✅ Hunk already has proper prefixes")
+            return hunk_content
+        
+        # Lines don't have prefixes - we need to fix this
+        print("🔧 Adding missing +/- prefixes to hunk")
+        
+        # Strategy: Compare hunk content with old file section
+        # Lines that match old section = context or removed
+        # Lines that don't match = added
+        
+        for line in hunk_content:
+            line_content = line.strip()
+            if not line_content:
+                fixed_lines.append(' ')  # Empty context line
+                continue
+            
+            # Check if this line exists in the old section
+            found_in_old = False
+            for old_line in old_section:
+                if old_line.strip() == line_content:
+                    found_in_old = True
+                    break
+            
+            if found_in_old:
+                # This line exists in old - could be context or removed
+                # For now, treat as context unless we can be more specific
+                fixed_lines.append(f' {line_content}')
+            else:
+                # This line doesn't exist in old - it's being added
+                fixed_lines.append(f'+{line_content}')
+        
+        # If we have counts, try to be more precise about what's removed
+        if old_count > 0 and len(fixed_lines) > 0:
+            # We need to mark some lines as removed
+            # Strategy: lines that appear in old section but not in new should be marked as removed
+            for old_line in old_section:
+                old_content = old_line.strip()
+                if old_content and not any(line.endswith(old_content) for line in fixed_lines):
+                    # This old line is not in the new content - it's being removed
+                    fixed_lines.insert(0, f'-{old_content}')
+        
+        print(f"✅ Fixed {len(fixed_lines)} lines in hunk")
+        return fixed_lines
+    
+    def validate_diff_structure(self, patch_text: str) -> Tuple[bool, List[str]]:
+        """
+        Validate the structure of a diff and return issues found.
+        
+        Returns:
+            Tuple of (is_valid, list_of_issues)
+        """
+        issues = []
+        
+        if '*** Begin Patch' not in patch_text:
+            issues.append("Missing '*** Begin Patch' sentinel")
+        
+        if '*** End Patch' not in patch_text:
+            issues.append("Missing '*** End Patch' sentinel")
+        
+        # Check for file updates
+        file_updates = re.findall(r'\*\*\* Update File: (.+)', patch_text)
+        if not file_updates:
+            issues.append("No file updates found")
+        
+        # Check each hunk
+        hunks = re.findall(r'@@[^@]+@@', patch_text)
+        for i, hunk in enumerate(hunks):
+            if not re.match(r'@@ -\d+,\d+ \+\d+,\d+ @@', hunk):
+                issues.append(f"Hunk {i+1} has invalid header format: {hunk}")
+        
+        return len(issues) == 0, issues
+
+
 class DiffParser:
     """Parse unified diff format with OpenAI-style sentinels."""
     
@@ -573,6 +759,7 @@ class DiffBuilder:
         self.patch_file = patch_file
         self.app_dir = Path(app_dir)
         self.applier = DiffApplier(self.app_dir)
+        self.sanitizer = DiffSanitizer(self.app_dir)
         self.max_retries = 2
         
     def build(self) -> bool:
@@ -587,10 +774,30 @@ class DiffBuilder:
             
         try:
             with open(self.patch_file, 'r') as f:
-                patch_content = f.read()
+                raw_patch_content = f.read()
         except Exception as e:
             print(f"❌ Failed to read patch file: {e}")
             return False
+        
+        # Validate and sanitize the patch first
+        is_valid, issues = self.sanitizer.validate_diff_structure(raw_patch_content)
+        if not is_valid:
+            print("⚠️ Diff validation issues found:")
+            for issue in issues:
+                print(f"   - {issue}")
+            print("🧹 Attempting to sanitize diff...")
+        
+        # Sanitize the patch to fix common AI mistakes
+        patch_content = self.sanitizer.sanitize_patch(raw_patch_content)
+        
+        # Save sanitized patch for debugging
+        sanitized_file = self.patch_file.replace('.patch', '_sanitized.patch')
+        try:
+            with open(sanitized_file, 'w') as f:
+                f.write(patch_content)
+            print(f"💾 Sanitized patch saved to: {sanitized_file}")
+        except Exception:
+            pass  # Not critical if we can't save debug file
             
         # Apply patch with retries
         for attempt in range(self.max_retries + 1):

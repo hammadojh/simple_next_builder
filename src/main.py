@@ -491,9 +491,9 @@ Multi-LLM Builder with validation
         return '\n'.join(structure_info)
     
     def edit_existing_app(self, app_directory: str, edit_idea: str) -> bool:
-        """Edit an existing NextJS app using the new diff-based approach."""
+        """Edit an existing NextJS app using the robust intent-based approach (with diff fallback)."""
         app_name = Path(app_directory).name
-        print("✏️  NextJS App Editor (Diff-Based)")
+        print("✏️  NextJS App Editor (Intent-Based + Robust Fallbacks)")
         print("=" * 50)
         print(f"App Directory: {app_directory}")
         print(f"Edit Request: {edit_idea}")
@@ -504,21 +504,21 @@ Multi-LLM Builder with validation
         
         try:
             # Create app builder instance for this specific app
-            print("🔧 Initializing diff-based editor...")
+            print("🔧 Initializing robust intent-based editor...")
             app_builder = MultiLLMAppBuilder()
             app_builder.app_name = app_name  # Set the app name
             app_builder.apps_dir = Path(app_directory).parent  # Set the apps directory
             
-            # Use the new diff-based edit_app method
-            print("🚀 Applying diff-based edits...")
-            success = app_builder.edit_app(edit_idea)
+            # Use the robust intent-based edit_app method (with diff fallback)
+            print("🚀 Applying intent-based edits (more robust)...")
+            success = app_builder.edit_app(edit_idea, use_intent_based=True)
             
             if success:
-                print("✅ Edits applied successfully using diff-based approach!")
+                print("✅ Edits applied successfully using robust intent-based approach!")
                 self.error_logger.log_build_attempt(app_name, f"edit: {edit_idea[:50]}...", True)
                 return True
             else:
-                print("❌ Diff-based edit failed")
+                print("❌ Intent-based edit failed (all fallback strategies exhausted)")
                 self.error_logger.log_build_attempt(app_name, f"edit: {edit_idea[:50]}...", False)
                 return False
             
