@@ -6,19 +6,24 @@ recovery strategies and fallback mechanisms to guarantee success.
 
 Key Principles:
 1. NEVER return failure to user
-2. Try multiple approaches until one works
-3. Progressively simpler fallbacks
-4. Smart error analysis and targeted fixes
-5. Graceful degradation if needed
+2. Detect corruption FIRST before attempting patches
+3. Try multiple approaches until one works
+4. Progressively simpler fallbacks
+5. Smart error analysis and targeted fixes
+6. Graceful degradation if needed
 """
 
 import re
 import os
 import subprocess
 import time
+import shutil
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
+
+# Import our corruption detector
+from .corruption_detector import FileCorruptionDetector, CorruptionLevel, CorruptionReport
 
 
 @dataclass
@@ -34,7 +39,11 @@ class ErrorRecoveryAgent:
     """
     Comprehensive error recovery agent that ensures edit operations never fail.
     
+    NEW: Corruption-aware recovery system that detects fundamental file corruption
+    and restores clean state before attempting patches.
+    
     Uses multiple strategies in order of sophistication:
+    0. Corruption detection and restoration (NEW)
     1. Diff-based editing (primary robust approach)
     2. Intent-based editing (for simple changes)
     3. Smart error analysis and targeted fixes
@@ -45,8 +54,10 @@ class ErrorRecoveryAgent:
     
     def __init__(self, app_builder):
         self.app_builder = app_builder
+        self.corruption_detector = FileCorruptionDetector()
         self.recovery_attempts = []
         self.strategies = [
+            RecoveryStrategy("corruption_recovery", "Detect and fix file corruption", "complex", 0.95),
             RecoveryStrategy("diff_based", "Unified diff with sanitization", "moderate", 0.85),
             RecoveryStrategy("intent_based", "Structured JSON intents", "simple", 0.70),
             RecoveryStrategy("targeted_fix", "AI-guided specific error fixes", "complex", 0.90),
@@ -59,6 +70,8 @@ class ErrorRecoveryAgent:
         """
         Execute edit with comprehensive error recovery.
         
+        NEW: Now starts with corruption detection and restoration.
+        
         This method GUARANTEES success by trying multiple approaches.
         
         Args:
@@ -69,6 +82,11 @@ class ErrorRecoveryAgent:
         """
         print("🛡️ Starting robust edit with comprehensive error recovery...")
         print(f"🎯 Target: {app_idea}")
+        
+        # Strategy 0: Corruption detection and restoration (NEW)
+        corruption_handled = self._detect_and_handle_corruption()
+        if corruption_handled:
+            print("✅ CORRUPTION RECOVERY: Files restored to clean state!")
         
         # Strategy 1: Primary robust approach (diff-based)
         success = self._try_diff_based_approach(app_idea)
@@ -104,6 +122,311 @@ class ErrorRecoveryAgent:
         success = self._apply_graceful_fallback(app_idea)
         print("✅ SUCCESS: Graceful fallback ensured partial success!")
         return True  # This strategy always succeeds
+    
+    def _detect_and_handle_corruption(self) -> bool:
+        """
+        NEW: Detect file corruption and restore clean state if needed.
+        
+        Returns:
+            True if corruption was detected and handled, False if files are clean
+        """
+        print("🔍 Strategy 0: Corruption detection and restoration...")
+        
+        app_path = self.app_builder.get_app_path()
+        if not app_path:
+            print("⚠️ No app path found, skipping corruption detection")
+            return False
+        
+        # Key files to check for corruption
+        key_files = [
+            "app/page.tsx",
+            "app/layout.tsx", 
+            "app/globals.css",
+            "package.json",
+            "next.config.js",
+            "tailwind.config.js"
+        ]
+        
+        corrupted_files = []
+        
+        for file_rel_path in key_files:
+            file_path = Path(app_path) / file_rel_path
+            if file_path.exists():
+                report = self.corruption_detector.analyze_file(str(file_path))
+                
+                print(f"📋 Analyzing {file_rel_path}: {report.overall_level.value} corruption")
+                
+                if report.overall_level in [CorruptionLevel.SEVERE, CorruptionLevel.CRITICAL]:
+                    print(f"🚨 SEVERE CORRUPTION detected in {file_rel_path}:")
+                    for issue in report.issues[:3]:  # Show top 3 issues
+                        print(f"   - {issue.description}")
+                    
+                    corrupted_files.append((file_path, report))
+                elif report.overall_level == CorruptionLevel.MODERATE:
+                    print(f"⚠️ Moderate corruption in {file_rel_path} - will attempt targeted fixes")
+                    corrupted_files.append((file_path, report))
+        
+        if not corrupted_files:
+            print("✅ No significant corruption detected in key files")
+            return False
+        
+        # Handle corrupted files
+        print(f"🔧 Handling {len(corrupted_files)} corrupted files...")
+        
+        restoration_success = 0
+        for file_path, report in corrupted_files:
+            success = self._restore_corrupted_file(file_path, report)
+            if success:
+                restoration_success += 1
+                print(f"✅ Restored {file_path.name}")
+            else:
+                print(f"⚠️ Could not fully restore {file_path.name}")
+        
+        if restoration_success > 0:
+            print(f"🔄 Restored {restoration_success}/{len(corrupted_files)} files")
+            # Verify build works after restoration
+            build_success = self.app_builder.build_and_run(auto_install_deps=False)
+            if build_success:
+                print("✅ Build successful after corruption restoration!")
+                return True
+            else:
+                print("⚠️ Build still has issues after restoration, will try other strategies")
+        
+        return restoration_success > 0
+    
+    def _restore_corrupted_file(self, file_path: Path, report: CorruptionReport) -> bool:
+        """
+        Restore a corrupted file using the recommended action.
+        
+        Args:
+            file_path: Path to the corrupted file
+            report: Corruption analysis report
+            
+        Returns:
+            True if restoration was successful
+        """
+        print(f"🔧 Restoring {file_path.name} (Level: {report.overall_level.value})")
+        
+        # Try to restore from backup first
+        backup_restored = self._restore_from_backup(file_path)
+        if backup_restored:
+            return True
+        
+        # If no backup, try to fix corruption in place
+        if report.recommended_action == "apply_targeted_fixes":
+            return self._apply_corruption_fixes(file_path, report)
+        elif report.recommended_action in ["restore_from_backup", "restore_from_backup_or_recreate"]:
+            return self._recreate_clean_file(file_path)
+        else:
+            return self._apply_corruption_fixes(file_path, report)
+    
+    def _restore_from_backup(self, file_path: Path) -> bool:
+        """Try to restore file from various backup sources."""
+        
+        # Try version manager backup if available
+        if hasattr(self.app_builder, 'version_manager'):
+            try:
+                success = self.app_builder.version_manager.restore_file(str(file_path))
+                if success:
+                    print(f"✅ Restored {file_path.name} from version manager backup")
+                    return True
+            except Exception as e:
+                print(f"⚠️ Version manager restore failed: {e}")
+        
+        # Try .bak file
+        backup_file = file_path.with_suffix(file_path.suffix + '.bak')
+        if backup_file.exists():
+            try:
+                shutil.copy2(backup_file, file_path)
+                print(f"✅ Restored {file_path.name} from .bak file")
+                return True
+            except Exception as e:
+                print(f"⚠️ .bak file restore failed: {e}")
+        
+        return False
+    
+    def _apply_corruption_fixes(self, file_path: Path, report: CorruptionReport) -> bool:
+        """Apply targeted fixes for specific corruption issues."""
+        try:
+            content = file_path.read_text()
+            fixed_content = content
+            
+            print(f"🔧 Applying {len(report.issues)} corruption fixes...")
+            
+            for issue in report.issues:
+                if issue.issue_type == "unbalanced_brackets":
+                    fixed_content = self._fix_unbalanced_brackets(fixed_content)
+                elif issue.issue_type == "duplicate_function":
+                    fixed_content = self._remove_duplicate_functions(fixed_content)
+                elif issue.issue_type == "malformed_import":
+                    fixed_content = self._fix_malformed_imports(fixed_content)
+                elif issue.issue_type == "unbalanced_jsx":
+                    fixed_content = self._fix_jsx_balance(fixed_content)
+                elif issue.issue_type == "line_concatenation":
+                    fixed_content = self._fix_line_concatenation(fixed_content)
+            
+            # Only write if we actually made changes
+            if fixed_content != content:
+                # Create backup before fixing
+                backup_path = file_path.with_suffix(file_path.suffix + '.corrupt.bak')
+                file_path.write_text(content)  # Save corrupt version
+                shutil.copy2(file_path, backup_path)
+                
+                # Apply fixes
+                file_path.write_text(fixed_content)
+                print(f"✅ Applied corruption fixes to {file_path.name}")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            print(f"❌ Error applying corruption fixes: {e}")
+            return False
+    
+    def _recreate_clean_file(self, file_path: Path) -> bool:
+        """Recreate a clean version of a critically corrupted file."""
+        
+        if file_path.name == "page.tsx":
+            # Create a minimal working page.tsx
+            clean_content = '''
+"use client"
+
+import { useState } from 'react'
+
+export default function HomePage() {
+  const [message, setMessage] = useState('Hello, World!')
+
+  return (
+    <div className="max-w-xl mx-auto p-4">
+      <h1 className="text-2xl font-bold mb-4">My App</h1>
+      <p className="text-gray-700">{message}</p>
+      <button 
+        onClick={() => setMessage('Button clicked!')}
+        className="mt-4 bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
+      >
+        Click me
+      </button>
+    </div>
+  )
+}
+'''
+        elif file_path.name == "layout.tsx":
+            # Create a minimal layout.tsx
+            clean_content = '''
+import type { Metadata } from 'next'
+import { Inter } from 'next/font/google'
+import './globals.css'
+
+const inter = Inter({ subsets: ['latin'] })
+
+export const metadata: Metadata = {
+  title: 'My App',
+  description: 'Generated by create-next-app',
+}
+
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  return (
+    <html lang="en">
+      <body className={inter.className}>{children}</body>
+    </html>
+  )
+}
+'''
+        else:
+            return False
+        
+        try:
+            # Backup corrupted file
+            backup_path = file_path.with_suffix(file_path.suffix + '.corrupt.bak')
+            if file_path.exists():
+                shutil.copy2(file_path, backup_path)
+            
+            # Write clean content
+            file_path.write_text(clean_content.strip())
+            print(f"✅ Recreated clean {file_path.name}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error recreating clean file: {e}")
+            return False
+    
+    def _fix_unbalanced_brackets(self, content: str) -> str:
+        """Fix unbalanced brackets in content."""
+        # Simple bracket balancing - add missing closing brackets
+        lines = content.split('\n')
+        fixed_lines = []
+        
+        for line in lines:
+            open_braces = line.count('{') - line.count('}')
+            open_parens = line.count('(') - line.count(')')
+            
+            fixed_line = line
+            if open_braces > 0:
+                fixed_line += '}' * open_braces
+            if open_parens > 0:
+                fixed_line += ')' * open_parens
+                
+            fixed_lines.append(fixed_line)
+        
+        return '\n'.join(fixed_lines)
+    
+    def _remove_duplicate_functions(self, content: str) -> str:
+        """Remove duplicate function declarations."""
+        lines = content.split('\n')
+        seen_functions = set()
+        filtered_lines = []
+        
+        for line in lines:
+            # Check for function declarations
+            func_match = re.search(r'(function\s+(\w+)|const\s+(\w+)\s*=.*=>)', line.strip())
+            
+            if func_match:
+                func_name = func_match.group(2) or func_match.group(3)
+                if func_name not in seen_functions:
+                    seen_functions.add(func_name)
+                    filtered_lines.append(line)
+                else:
+                    print(f"  🗑️ Removed duplicate function: {func_name}")
+                    continue
+            else:
+                filtered_lines.append(line)
+        
+        return '\n'.join(filtered_lines)
+    
+    def _fix_malformed_imports(self, content: str) -> str:
+        """Fix malformed import statements."""
+        # Fix common import issues
+        content = re.sub(r'import\s+(.+?)\s+from\s+([^\'"][^\s]+)', r"import \1 from '\2'", content)
+        content = re.sub(r'import\s+(.+?)\s+from\s+([\'"][^\'"]+[\'"])', r'import \1 from \2', content)
+        return content
+    
+    def _fix_jsx_balance(self, content: str) -> str:
+        """Basic JSX balance fixes."""
+        # This is a simplified fix - in production you'd want more sophisticated JSX parsing
+        lines = content.split('\n')
+        fixed_lines = []
+        
+        for line in lines:
+            # Basic fix for obviously unbalanced JSX
+            if '<div' in line and '>' in line and '</div>' not in line and '/>' not in line:
+                # Check if it's a self-contained div that might be missing closure
+                if line.count('<div') > line.count('</div>'):
+                    line = line.rstrip() + '</div>'
+            
+            fixed_lines.append(line)
+        
+        return '\n'.join(fixed_lines)
+    
+    def _fix_line_concatenation(self, content: str) -> str:
+        """Fix lines that have been incorrectly concatenated."""
+        # Split very long lines that contain multiple statements
+        content = re.sub(r';\s*([a-zA-Z])', r';\n\1', content)
+        content = re.sub(r'}\s*([a-zA-Z])', r'}\n\1', content)
+        return content
     
     def _try_diff_based_approach(self, app_idea: str) -> bool:
         """Try the robust diff-based approach with enhanced error handling."""

@@ -676,32 +676,34 @@ Be precise and make only the necessary changes to accomplish the task.
     
     def _gather_context_for_task(self, task: Task) -> str:
         """Gather relevant context for a specific task."""
-        context_parts = []
+        if not self.app_builder or not hasattr(self.app_builder, 'app_name'):
+            return "No app context available"
         
         try:
-            # Add task-specific context
-            if task.context_needed:
-                for context_item in task.context_needed:
-                    if context_item == "user_request" and self.current_plan:
-                        context_parts.append(f"USER REQUEST: {self.current_plan.user_request}")
-                    elif context_item == "requirements" and task.result:
-                        context_parts.append(f"REQUIREMENTS: {task.result}")
-                    elif context_item == "all_files" and self.app_builder:
-                        # Get basic file structure
-                        try:
-                            app_path = self.app_builder.get_app_path()
-                            context_parts.append(f"APP STRUCTURE: {self._get_basic_file_structure(app_path)}")
-                        except:
-                            context_parts.append("APP STRUCTURE: Not available")
+            app_path = os.path.join(self.app_builder.apps_dir, self.app_builder.app_name)
+            context_info = f"App: {self.app_builder.app_name}\nLocation: {app_path}\n\n"
             
-            # Add results from completed dependency tasks
-            if self.current_plan:
-                for dep_id in task.dependencies:
-                    for dep_task in self.current_plan.tasks:
-                        if dep_task.id == dep_id and dep_task.status == "completed" and dep_task.result:
-                            context_parts.append(f"FROM {dep_id}: {dep_task.result}")
+            # Get file list
+            if os.path.exists(app_path):
+                context_info += "Available files:\n"
+                for root, dirs, files in os.walk(app_path):
+                    for file in files:
+                        if file.endswith(('.tsx', '.ts', '.js', '.jsx')):
+                            rel_path = os.path.relpath(os.path.join(root, file), app_path)
+                            context_info += f"  - {rel_path}\n"
             
-            return "\n".join(context_parts) if context_parts else "No additional context available."
+            # Add specific context based on task type
+            if task.task_type == "create_file":
+                context_info += f"\nTask: Create {task.description}\n"
+                context_info += "Important: Use proper NextJS App Router syntax with 'use client' directive for client components\n"
+                context_info += "Important: Use useRouter from 'next/navigation' not 'next/router'\n"
+                context_info += "Important: Ensure all JSX return statements are properly closed with parentheses\n"
+            elif task.task_type == "edit_file":
+                context_info += f"\nTask: Edit {task.description}\n"
+                context_info += "Important: When generating diffs, account for 'use client' directives at the top of files\n"
+                context_info += "Important: Provide exact context matching for diff application\n"
+            
+            return context_info
             
         except Exception as e:
             return f"Error gathering context: {str(e)}"

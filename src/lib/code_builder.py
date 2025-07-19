@@ -15,7 +15,417 @@ import argparse
 import os
 import re
 from pathlib import Path
-from typing import List, Tuple, Union
+from typing import List, Tuple, Union, Dict, Set, NamedTuple, Optional
+from dataclasses import dataclass
+from collections import defaultdict
+
+
+@dataclass
+class ContentAnalysis:
+    """Analysis of code content for duplicate detection."""
+    raw_content: str
+    normalized_content: str
+    primary_construct: str  # 'import', 'interface', 'function', 'component', etc.
+    construct_name: str  # actual name of the construct
+    imports: List[str]  # list of imported names
+    exports: List[str]  # list of exported names
+    semantic_signature: str  # semantic fingerprint
+    structural_patterns: Set[str]  # structural patterns found
+    description: str  # human-readable description
+    line_count: int
+    is_typescript: bool
+
+
+@dataclass
+class RedefinitionRisk:
+    """Assessment of redefinition risk for a code edit."""
+    is_dangerous: bool
+    reason: str
+    risk_level: str  # 'low', 'medium', 'high', 'critical'
+    conflicting_constructs: List[str]
+
+
+class EnhancedDuplicateDetector:
+    """
+    Advanced duplicate detection for code edits.
+    
+    Detects:
+    - Exact duplicates (same text)
+    - Structural duplicates (same code structure)
+    - Semantic duplicates (same meaning, different syntax) 
+    - Import duplicates (same imports, different formatting)
+    - Component/function redefinitions
+    """
+    
+    def __init__(self, existing_content: str, filename: str):
+        self.existing_content = existing_content
+        self.filename = filename
+        self.is_typescript = filename.endswith(('.ts', '.tsx'))
+        self.is_react = filename.endswith(('.jsx', '.tsx'))
+        
+        # Extract existing patterns from the file
+        self.existing_imports = self._extract_imports(existing_content)
+        self.existing_exports = self._extract_exports(existing_content)
+        self.existing_functions = self._extract_functions(existing_content)
+        self.existing_interfaces = self._extract_interfaces(existing_content)
+        self.existing_components = self._extract_components(existing_content)
+        
+        # Track new content added in this session
+        self.session_content = []
+        self.session_signatures = set()
+        
+        # Statistics
+        self.duplicate_stats = defaultdict(int)
+    
+    def analyze_content(self, content: str) -> ContentAnalysis:
+        """Analyze content and extract structural information."""
+        normalized = self._normalize_content(content)
+        
+        # Detect primary construct type
+        primary_construct = self._detect_primary_construct(content)
+        construct_name = self._extract_construct_name(content, primary_construct)
+        
+        # Extract patterns
+        imports = self._extract_imports(content)
+        exports = self._extract_exports(content)
+        structural_patterns = self._extract_structural_patterns(content)
+        
+        # Generate semantic signature
+        semantic_signature = self._generate_semantic_signature(content, primary_construct)
+        
+        # Create description
+        description = self._generate_description(primary_construct, construct_name, len(content.split('\n')))
+        
+        return ContentAnalysis(
+            raw_content=content,
+            normalized_content=normalized,
+            primary_construct=primary_construct,
+            construct_name=construct_name,
+            imports=imports,
+            exports=exports,
+            semantic_signature=semantic_signature,
+            structural_patterns=structural_patterns,
+            description=description,
+            line_count=len(content.split('\n')),
+            is_typescript=self.is_typescript
+        )
+    
+    def is_exact_duplicate(self, content: str) -> bool:
+        """Check for exact content duplicates."""
+        normalized = self._normalize_content(content)
+        existing_normalized = self._normalize_content(self.existing_content)
+        
+        if normalized in existing_normalized:
+            self.duplicate_stats['exact'] += 1
+            return True
+        return False
+    
+    def is_structural_duplicate(self, analysis: ContentAnalysis) -> bool:
+        """Check for structural duplicates (same type of construct with same name)."""
+        if analysis.primary_construct == 'import':
+            # Check for import duplicates
+            for existing_import in self.existing_imports:
+                if self._imports_equivalent(analysis.imports, [existing_import]):
+                    self.duplicate_stats['import'] += 1
+                    return True
+        
+        elif analysis.primary_construct == 'interface' and analysis.construct_name:
+            if analysis.construct_name in self.existing_interfaces:
+                self.duplicate_stats['interface'] += 1
+                return True
+        
+        elif analysis.primary_construct == 'function' and analysis.construct_name:
+            if analysis.construct_name in self.existing_functions:
+                self.duplicate_stats['function'] += 1
+                return True
+        
+        elif analysis.primary_construct == 'component' and analysis.construct_name:
+            if analysis.construct_name in self.existing_components:
+                self.duplicate_stats['component'] += 1
+                return True
+        
+        return False
+    
+    def is_semantic_duplicate(self, analysis: ContentAnalysis) -> bool:
+        """Check for semantic duplicates (same meaning, different syntax)."""
+        if analysis.semantic_signature in self.session_signatures:
+            self.duplicate_stats['semantic'] += 1
+            return True
+        return False
+    
+    def check_redefinition_risk(self, analysis: ContentAnalysis) -> RedefinitionRisk:
+        """Assess the risk of redefinition conflicts."""
+        dangerous = False
+        reason = ""
+        risk_level = "low"
+        conflicting_constructs = []
+        
+        # Check for dangerous redefinitions
+        if analysis.primary_construct in ['function', 'component', 'interface']:
+            if analysis.construct_name:
+                # Check against existing file content
+                if analysis.construct_name in self.existing_functions:
+                    dangerous = True
+                    reason = f"Function '{analysis.construct_name}' already exists"
+                    risk_level = "high"
+                    conflicting_constructs.append(f"function:{analysis.construct_name}")
+                
+                elif analysis.construct_name in self.existing_components:
+                    dangerous = True
+                    reason = f"Component '{analysis.construct_name}' already exists"
+                    risk_level = "critical"  # Component redefinition is very dangerous
+                    conflicting_constructs.append(f"component:{analysis.construct_name}")
+                
+                elif analysis.construct_name in self.existing_interfaces:
+                    dangerous = True
+                    reason = f"Interface '{analysis.construct_name}' already exists"
+                    risk_level = "high"
+                    conflicting_constructs.append(f"interface:{analysis.construct_name}")
+        
+        # Check for export conflicts
+        for export in analysis.exports:
+            if export in self.existing_exports:
+                if risk_level == "low":
+                    risk_level = "medium"
+                reason += f" Export '{export}' conflicts"
+                conflicting_constructs.append(f"export:{export}")
+        
+        return RedefinitionRisk(
+            is_dangerous=dangerous,
+            reason=reason,
+            risk_level=risk_level,
+            conflicting_constructs=conflicting_constructs
+        )
+    
+    def get_content_signature(self, analysis: ContentAnalysis) -> str:
+        """Generate a unique signature for content."""
+        key_parts = [
+            analysis.primary_construct,
+            analysis.construct_name,
+            analysis.semantic_signature[:20],  # First 20 chars
+            str(len(analysis.structural_patterns))
+        ]
+        return "|".join(filter(None, key_parts))
+    
+    def register_new_content(self, analysis: ContentAnalysis):
+        """Register new content to track for subsequent duplicates."""
+        self.session_content.append(analysis)
+        self.session_signatures.add(analysis.semantic_signature)
+        
+        # Update tracking sets
+        if analysis.primary_construct == 'function' and analysis.construct_name:
+            self.existing_functions.add(analysis.construct_name)
+        elif analysis.primary_construct == 'component' and analysis.construct_name:
+            self.existing_components.add(analysis.construct_name)
+        elif analysis.primary_construct == 'interface' and analysis.construct_name:
+            self.existing_interfaces.add(analysis.construct_name)
+        
+        self.existing_imports.extend(analysis.imports)
+        self.existing_exports.extend(analysis.exports)
+    
+    def get_duplicate_stats(self) -> str:
+        """Get statistics about duplicates found."""
+        if not self.duplicate_stats:
+            return "none"
+        
+        stats_parts = []
+        for dup_type, count in self.duplicate_stats.items():
+            stats_parts.append(f"{dup_type}:{count}")
+        
+        return ", ".join(stats_parts)
+    
+    # Helper methods for pattern extraction
+    
+    def _normalize_content(self, content: str) -> str:
+        """Normalize content for comparison."""
+        # Remove extra whitespace and normalize line endings
+        normalized = re.sub(r'\s+', ' ', content.strip())
+        # Remove comments
+        normalized = re.sub(r'//.*$', '', normalized, flags=re.MULTILINE)
+        normalized = re.sub(r'/\*.*?\*/', '', normalized, flags=re.DOTALL)
+        return normalized.lower()
+    
+    def _detect_primary_construct(self, content: str) -> str:
+        """Detect the primary type of construct in the content."""
+        content_lower = content.lower().strip()
+        
+        if content_lower.startswith('import ') or 'from ' in content_lower:
+            return 'import'
+        elif 'interface ' in content_lower:
+            return 'interface'
+        elif 'export default function' in content_lower or 'function ' in content_lower:
+            return 'function'
+        elif 'export default' in content_lower and ('function' in content_lower or 'const' in content_lower):
+            return 'component'
+        elif 'const ' in content_lower and '=>' in content_lower:
+            return 'component'  # Arrow function component
+        elif 'export ' in content_lower:
+            return 'export'
+        else:
+            return 'unknown'
+    
+    def _extract_construct_name(self, content: str, construct_type: str) -> str:
+        """Extract the name of the primary construct."""
+        if construct_type == 'function':
+            match = re.search(r'function\s+(\w+)', content)
+            if match:
+                return match.group(1)
+        
+        elif construct_type == 'component':
+            # Look for component names in various patterns
+            patterns = [
+                r'export default function\s+(\w+)',
+                r'const\s+(\w+)\s*=.*?=>',
+                r'function\s+(\w+)',
+                r'export default\s+(\w+)'
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, content)
+                if match:
+                    return match.group(1)
+        
+        elif construct_type == 'interface':
+            match = re.search(r'interface\s+(\w+)', content)
+            if match:
+                return match.group(1)
+        
+        return ""
+    
+    def _extract_imports(self, content: str) -> List[str]:
+        """Extract import statements and imported names."""
+        imports = []
+        import_pattern = r'import\s+(?:{([^}]+)}|\*\s+as\s+(\w+)|(\w+))\s+from\s+[\'"]([^\'"]+)[\'"]'
+        
+        for match in re.finditer(import_pattern, content):
+            if match.group(1):  # Named imports {a, b, c}
+                named_imports = [name.strip() for name in match.group(1).split(',')]
+                imports.extend(named_imports)
+            elif match.group(2):  # * as alias
+                imports.append(match.group(2))
+            elif match.group(3):  # default import
+                imports.append(match.group(3))
+        
+        return imports
+    
+    def _extract_exports(self, content: str) -> List[str]:
+        """Extract export statements and exported names."""
+        exports = []
+        
+        # Export patterns
+        patterns = [
+            r'export\s+(?:default\s+)?(?:function|const|let|var)\s+(\w+)',
+            r'export\s+default\s+(\w+)',
+            r'export\s+{\s*([^}]+)\s*}'
+        ]
+        
+        for pattern in patterns:
+            matches = re.finditer(pattern, content)
+            for match in matches:
+                if '{' in match.group(0):  # Named exports
+                    named_exports = [name.strip() for name in match.group(1).split(',')]
+                    exports.extend(named_exports)
+                else:
+                    exports.append(match.group(1))
+        
+        return exports
+    
+    def _extract_functions(self, content: str) -> Set[str]:
+        """Extract function names from content."""
+        functions = set()
+        patterns = [
+            r'function\s+(\w+)',
+            r'const\s+(\w+)\s*=\s*(?:async\s+)?(?:\([^)]*\)\s*=>|\([^)]*\)\s*:\s*[^=]*=>)',
+        ]
+        
+        for pattern in patterns:
+            matches = re.finditer(pattern, content)
+            for match in matches:
+                functions.add(match.group(1))
+        
+        return functions
+    
+    def _extract_interfaces(self, content: str) -> Set[str]:
+        """Extract interface names from content."""
+        interfaces = set()
+        pattern = r'interface\s+(\w+)'
+        
+        matches = re.finditer(pattern, content)
+        for match in matches:
+            interfaces.add(match.group(1))
+        
+        return interfaces
+    
+    def _extract_components(self, content: str) -> Set[str]:
+        """Extract React component names from content."""
+        components = set()
+        
+        # Various component patterns
+        patterns = [
+            r'export default function\s+(\w+)',
+            r'const\s+(\w+)\s*=\s*(?:\([^)]*\)\s*:\s*\w+\s*)?=>\s*{',  # Arrow function components
+            r'function\s+(\w+).*?return\s*\(',  # Function components
+        ]
+        
+        for pattern in patterns:
+            matches = re.finditer(pattern, content, re.DOTALL)
+            for match in matches:
+                component_name = match.group(1)
+                # Check if it looks like a component (starts with uppercase)
+                if component_name[0].isupper():
+                    components.add(component_name)
+        
+        return components
+    
+    def _extract_structural_patterns(self, content: str) -> Set[str]:
+        """Extract structural patterns for comparison."""
+        patterns = set()
+        
+        # Add patterns based on content
+        if 'useState' in content:
+            patterns.add('uses_state')
+        if 'useEffect' in content:
+            patterns.add('uses_effect')
+        if 'interface' in content:
+            patterns.add('has_interface')
+        if 'export default' in content:
+            patterns.add('default_export')
+        if '=>' in content:
+            patterns.add('arrow_function')
+        
+        return patterns
+    
+    def _generate_semantic_signature(self, content: str, construct_type: str) -> str:
+        """Generate a semantic signature for content comparison."""
+        # Create a hash-like signature based on semantic content
+        import hashlib
+        
+        # Extract key semantic elements
+        semantic_elements = []
+        semantic_elements.append(construct_type)
+        semantic_elements.extend(self._extract_imports(content))
+        semantic_elements.extend(self._extract_exports(content))
+        
+        # Add structural keywords
+        keywords = ['function', 'const', 'interface', 'export', 'import', 'return']
+        for keyword in keywords:
+            if keyword in content.lower():
+                semantic_elements.append(keyword)
+        
+        # Create signature
+        semantic_str = '|'.join(sorted(semantic_elements))
+        return hashlib.md5(semantic_str.encode()).hexdigest()[:16]
+    
+    def _generate_description(self, construct_type: str, construct_name: str, line_count: int) -> str:
+        """Generate human-readable description of the content."""
+        if construct_name:
+            return f"{construct_type} '{construct_name}' ({line_count} lines)"
+        else:
+            return f"{construct_type} block ({line_count} lines)"
+    
+    def _imports_equivalent(self, imports1: List[str], imports2: List[str]) -> bool:
+        """Check if two import lists are equivalent."""
+        return set(imports1) == set(imports2)
 
 
 class CodeBuilder:
@@ -645,7 +1055,7 @@ class CodeBuilder:
 
     def _remove_duplicate_edits(self, filename: str, edit_ops: List[Tuple[str, Tuple[int, int]]]) -> List[Tuple[str, Tuple[int, int]]]:
         """
-        Remove duplicate edits that would insert the same content multiple times.
+        Enhanced duplicate removal that catches structural and semantic duplicates.
         
         Args:
             filename: The file being edited
@@ -657,6 +1067,8 @@ class CodeBuilder:
         if len(edit_ops) <= 1:
             return edit_ops
         
+        print(f"🔍 Analyzing {len(edit_ops)} edits for duplicates in {filename}...")
+        
         # Read current file content to check for existing content
         target_file = self.output_dir / filename
         existing_content = ""
@@ -666,34 +1078,57 @@ class CodeBuilder:
             except Exception:
                 existing_content = ""
         
+        # Initialize duplicate detection systems
+        duplicate_detector = EnhancedDuplicateDetector(existing_content, filename)
+        
         filtered_ops = []
-        seen_content = set()
+        processed_signatures = set()
         
-        for content, line_range in edit_ops:
-            # Normalize content for comparison (remove extra whitespace)
-            normalized_content = ' '.join(content.split())
+        for i, (content, line_range) in enumerate(edit_ops):
+            edit_context = f"Edit {i+1}/{len(edit_ops)} at lines {line_range[0]}-{line_range[1]}"
             
-            # Check if this content already exists in the file
-            if normalized_content in ' '.join(existing_content.split()):
-                print(f"⚠️  Skipping duplicate content in {filename}: '{content[:50]}...'")
+            # Analyze the content for structural patterns
+            content_analysis = duplicate_detector.analyze_content(content)
+            
+            # Check for exact duplicates (simple case)
+            if duplicate_detector.is_exact_duplicate(content):
+                print(f"⚠️  [{edit_context}] Skipping exact duplicate: '{content[:50]}...'")
                 continue
             
-            # Check if we've already seen this exact content in our edits
-            if normalized_content in seen_content:
-                print(f"⚠️  Skipping duplicate edit in {filename}: '{content[:50]}...'")
+            # Check for structural duplicates (imports, interfaces, etc.)
+            if duplicate_detector.is_structural_duplicate(content_analysis):
+                print(f"⚠️  [{edit_context}] Skipping structural duplicate: {content_analysis.primary_construct}")
                 continue
             
-            # Check for function/variable redefinition patterns
-            if self._is_function_redefinition(content, existing_content):
-                print(f"⚠️  Skipping function redefinition in {filename}: '{content[:50]}...'")
+            # Check for semantic duplicates (same meaning, different syntax)
+            if duplicate_detector.is_semantic_duplicate(content_analysis):
+                print(f"⚠️  [{edit_context}] Skipping semantic duplicate: {content_analysis.semantic_signature}")
                 continue
             
-            seen_content.add(normalized_content)
+            # Check against other edits in this batch
+            content_signature = duplicate_detector.get_content_signature(content_analysis)
+            if content_signature in processed_signatures:
+                print(f"⚠️  [{edit_context}] Skipping batch duplicate with signature: {content_signature}")
+                continue
+            
+            # Check for dangerous redefinitions
+            redefinition_risk = duplicate_detector.check_redefinition_risk(content_analysis)
+            if redefinition_risk.is_dangerous:
+                print(f"🚨 [{edit_context}] Skipping dangerous redefinition: {redefinition_risk.reason}")
+                continue
+            
+            # This edit passed all duplicate checks
+            processed_signatures.add(content_signature)
+            duplicate_detector.register_new_content(content_analysis)
             filtered_ops.append((content, line_range))
+            print(f"✅ [{edit_context}] Edit approved: {content_analysis.description}")
         
-        if len(filtered_ops) != len(edit_ops):
             removed_count = len(edit_ops) - len(filtered_ops)
-            print(f"🔧 Removed {removed_count} duplicate edit(s) for {filename}")
+        if removed_count > 0:
+            print(f"🔧 Enhanced duplicate detection removed {removed_count}/{len(edit_ops)} edits for {filename}")
+            print(f"📊 Duplicate types found: {duplicate_detector.get_duplicate_stats()}")
+        else:
+            print(f"✅ No duplicates detected in {len(edit_ops)} edits for {filename}")
         
         return filtered_ops
     

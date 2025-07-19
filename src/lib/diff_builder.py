@@ -551,13 +551,21 @@ class DiffApplier:
         self.repo_root = Path(repo_root)
         self.fuzzy_matcher = FuzzyMatcher()
         self.backup_dir = self.repo_root / ".diff_backups"
+        self.transaction_id = None
+        self.transaction_backups = {}  # file_path -> backup_path
         
     def apply_patch(self, patch_text: str) -> List[PatchResult]:
         """
-        Apply a patch with transactional safety.
+        Apply a patch with full multi-file transactional safety.
+        
+        This method guarantees atomicity:
+        - Either ALL files are modified successfully
+        - OR ALL files remain unchanged (complete rollback)
         
         Returns list of results for each file modified.
         """
+        print("🔄 Starting atomic patch application...")
+        
         parser = DiffParser()
         
         try:
@@ -571,15 +579,310 @@ class DiffApplier:
             if hunk.file_path not in hunks_by_file:
                 hunks_by_file[hunk.file_path] = []
             hunks_by_file[hunk.file_path].append(hunk)
+        
+        print(f"📁 Transaction will modify {len(hunks_by_file)} files")
+        
+        # Start transaction
+        transaction_id = self._start_transaction()
+        
+        try:
+            # Phase 1: Validate ALL changes before applying ANY
+            print("🔍 Phase 1: Pre-validating all changes...")
+            validation_results = self._validate_all_changes(hunks_by_file)
             
+            failed_validations = [r for r in validation_results if not r.success]
+            if failed_validations:
+                print(f"❌ Pre-validation failed for {len(failed_validations)} files")
+                for result in failed_validations:
+                    print(f"   - {result.file_path}: {result.error_message}")
+                self._abort_transaction(transaction_id)
+                return validation_results
+            
+            print("✅ All changes pre-validated successfully")
+            
+            # Phase 2: Create backups for ALL files
+            print("📸 Phase 2: Creating atomic backups...")
+            backup_results = self._create_transaction_backups(hunks_by_file.keys())
+            
+            failed_backups = [r for r in backup_results if not r.success]
+            if failed_backups:
+                print(f"❌ Backup creation failed for {len(failed_backups)} files")
+                self._abort_transaction(transaction_id)
+                return backup_results
+            
+            print("✅ All backups created successfully")
+            
+            # Phase 3: Apply ALL changes
+            print("⚡ Phase 3: Applying all changes atomically...")
+            results = []
+            
+            for file_path, file_hunks in hunks_by_file.items():
+                result = self._apply_file_hunks_transactional(file_path, file_hunks, transaction_id)
+                results.append(result)
+                
+                # If ANY file fails, abort entire transaction
+                if not result.success:
+                    print(f"❌ File modification failed: {file_path}")
+                    print(f"🔄 Aborting transaction - rolling back ALL changes...")
+                    self._abort_transaction(transaction_id)
+                    return results
+            
+            # Phase 4: Commit transaction (remove backups)
+            print("✅ Phase 4: Committing transaction...")
+            self._commit_transaction(transaction_id)
+            
+            print(f"🎉 Atomic patch application completed successfully!")
+            print(f"✅ Modified {len(results)} files in atomic transaction")
+            
+            return results
+            
+        except Exception as e:
+            print(f"❌ Transaction failed with exception: {e}")
+            self._abort_transaction(transaction_id)
+            return [PatchResult(False, "", f"Transaction error: {e}")]
+    
+    def _start_transaction(self) -> str:
+        """Start a new transaction and return transaction ID."""
+        import time
+        transaction_id = f"txn_{int(time.time())}_{id(self)}"
+        self.transaction_id = transaction_id
+        self.transaction_backups = {}
+        
+        # Create transaction backup directory
+        txn_backup_dir = self.backup_dir / transaction_id
+        txn_backup_dir.mkdir(parents=True, exist_ok=True)
+        
+        print(f"🔄 Started transaction: {transaction_id}")
+        return transaction_id
+    
+    def _validate_all_changes(self, hunks_by_file: Dict[str, List]) -> List[PatchResult]:
+        """Pre-validate all changes without applying them."""
         results = []
         
-        # Process each file
         for file_path, file_hunks in hunks_by_file.items():
-            result = self._apply_file_hunks(file_path, file_hunks)
-            results.append(result)
+            # Resolve and validate file path
+            target_file = self._resolve_file_path(file_path)
+            if not target_file:
+                results.append(PatchResult(False, file_path, f"Invalid file path: {file_path}"))
+                continue
             
+            # Read current file content
+            try:
+                if target_file.exists():
+                    current_content = target_file.read_text()
+                    current_lines = current_content.splitlines(keepends=True)
+                else:
+                    current_lines = []
+            except Exception as e:
+                results.append(PatchResult(False, file_path, f"Failed to read file: {e}"))
+                continue
+            
+            # Validate each hunk can be applied
+            validation_success = True
+            validation_errors = []
+            
+            # Simulate applying hunks to check for conflicts
+            test_lines = current_lines.copy()
+            offset = 0
+            
+            sorted_hunks = sorted(file_hunks, key=lambda h: h.old_start)
+            for hunk in sorted_hunks:
+                # Check if this hunk can be applied
+                success, new_offset = self._validate_single_hunk(test_lines, hunk, offset)
+                if not success:
+                    validation_success = False
+                    validation_errors.append(f"Hunk at line {hunk.old_start} cannot be applied")
+                else:
+                    offset = new_offset
+            
+            if validation_success:
+                results.append(PatchResult(True, file_path))
+            else:
+                error_msg = f"Validation failed: {'; '.join(validation_errors)}"
+                results.append(PatchResult(False, file_path, error_msg))
+        
         return results
+    
+    def _validate_single_hunk(self, file_lines: List[str], hunk: DiffHunk, offset: int) -> Tuple[bool, int]:
+        """Validate that a single hunk can be applied without actually applying it."""
+        expected_pos = max(0, hunk.old_start - 1 + offset)
+        
+        # For insertion-only hunks, just check bounds
+        if not hunk.removed_lines and hunk.added_lines:
+            return True, len(hunk.added_lines)
+        
+        # For hunks with removals, validate the match
+        if hunk.removed_lines:
+            context_for_match = hunk.removed_lines
+            actual_pos = self.fuzzy_matcher.find_context_match(file_lines, context_for_match, expected_pos)
+            
+            if actual_pos is None:
+                return False, offset
+            
+            # Validate match quality
+            match_quality = self._validate_match_quality(file_lines, context_for_match, actual_pos)
+            if match_quality < 0.8:
+                return False, offset
+            
+            # Check bounds
+            if actual_pos + len(hunk.removed_lines) > len(file_lines):
+                return False, offset
+            
+            # Verify removal content
+            if not self._verify_removal_content(file_lines, hunk.removed_lines, actual_pos):
+                return False, offset
+            
+            # Calculate offset change
+            if hunk.added_lines:
+                new_offset = offset + len(hunk.added_lines) - len(hunk.removed_lines)
+            else:
+                new_offset = offset - len(hunk.removed_lines)
+            
+            return True, new_offset
+        
+        return True, offset
+    
+    def _create_transaction_backups(self, file_paths) -> List[PatchResult]:
+        """Create backups for all files in the transaction."""
+        results = []
+        
+        for file_path in file_paths:
+            target_file = self._resolve_file_path(file_path)
+            if not target_file:
+                results.append(PatchResult(False, file_path, "Invalid file path"))
+                continue
+            
+            try:
+                backup_path = self._create_transaction_backup(target_file, self.transaction_id)
+                if backup_path:  # backup_path can be actual path or "NEW_FILE"
+                    self.transaction_backups[file_path] = backup_path
+                    results.append(PatchResult(True, file_path))
+                else:
+                    results.append(PatchResult(False, file_path, "Backup creation failed"))
+            except Exception as e:
+                results.append(PatchResult(False, file_path, f"Backup error: {e}"))
+        
+        return results
+    
+    def _create_transaction_backup(self, target_file: Path, transaction_id: str) -> Optional[Path]:
+        """Create a backup file for the transaction."""
+        if not target_file.exists():
+            return "NEW_FILE"  # Special marker for new files (no backup needed)
+        
+        try:
+            backup_dir = self.backup_dir / transaction_id
+            backup_path = backup_dir / f"{target_file.name}.backup"
+            
+            # Ensure unique backup name if multiple files have same name
+            counter = 1
+            while backup_path.exists():
+                backup_path = backup_dir / f"{target_file.name}.backup.{counter}"
+                counter += 1
+            
+            import shutil
+            shutil.copy2(target_file, backup_path)
+            return backup_path
+            
+        except Exception as e:
+            print(f"❌ Failed to create backup for {target_file}: {e}")
+            return None
+    
+    def _apply_file_hunks_transactional(self, file_path: str, hunks: List[DiffHunk], transaction_id: str) -> PatchResult:
+        """Apply hunks to a file within a transaction (assumes validation already passed)."""
+        target_file = self._resolve_file_path(file_path)
+        if not target_file:
+            return PatchResult(False, file_path, f"Invalid file path: {file_path}")
+        
+        try:
+            # Read current content
+            if target_file.exists():
+                current_lines = target_file.read_text().splitlines(keepends=True)
+            else:
+                current_lines = []
+                target_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Apply hunks (we know they're valid from pre-validation)
+            modified_lines = current_lines.copy()
+            offset = 0
+            
+            sorted_hunks = sorted(hunks, key=lambda h: h.old_start)
+            for hunk in sorted_hunks:
+                success, new_offset = self._apply_single_hunk(modified_lines, hunk, offset)
+                if not success:
+                    # This should never happen due to pre-validation, but be safe
+                    return PatchResult(False, file_path, f"Unexpected hunk application failure at line {hunk.old_start}")
+                offset = new_offset
+            
+            # Final validation
+            modified_content = ''.join(modified_lines)
+            if file_path.endswith(('.tsx', '.ts', '.js', '.jsx')):
+                syntax_valid, syntax_error = self._validate_javascript_syntax(modified_content, file_path)
+                if not syntax_valid:
+                    return PatchResult(False, file_path, f"Generated code has syntax errors: {syntax_error}")
+            
+            # Write the file
+            target_file.write_text(modified_content)
+            
+            return PatchResult(True, file_path)
+            
+        except Exception as e:
+            return PatchResult(False, file_path, f"File modification error: {e}")
+    
+    def _commit_transaction(self, transaction_id: str):
+        """Commit transaction by removing backups."""
+        try:
+            backup_dir = self.backup_dir / transaction_id
+            if backup_dir.exists():
+                import shutil
+                shutil.rmtree(backup_dir)
+            
+            self.transaction_backups.clear()
+            self.transaction_id = None
+            
+            print(f"✅ Transaction {transaction_id} committed successfully")
+            
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to clean up transaction backups: {e}")
+    
+    def _abort_transaction(self, transaction_id: str):
+        """Abort transaction by restoring all files from backups."""
+        print(f"🔄 Aborting transaction {transaction_id}...")
+        
+        try:
+            # Restore all files from their backups
+            restored_count = 0
+            for file_path, backup_path in self.transaction_backups.items():
+                target_file = self._resolve_file_path(file_path)
+                if not target_file:
+                    continue
+                
+                if backup_path == "NEW_FILE":
+                    # This was a new file - delete it to restore original state
+                    if target_file.exists():
+                        target_file.unlink()
+                        restored_count += 1
+                elif backup_path and Path(backup_path).exists():
+                    # This was an existing file - restore from backup
+                    import shutil
+                    shutil.copy2(backup_path, target_file)
+                    restored_count += 1
+            
+            print(f"✅ Restored {restored_count} files from transaction backups")
+            
+            # Clean up backup directory
+            backup_dir = self.backup_dir / transaction_id
+            if backup_dir.exists():
+                import shutil
+                shutil.rmtree(backup_dir)
+            
+            self.transaction_backups.clear()
+            self.transaction_id = None
+            
+        except Exception as e:
+            print(f"❌ CRITICAL: Failed to abort transaction: {e}")
+            print(f"🆘 Manual intervention may be required to restore files")
+            print(f"🗂️ Backup location: {self.backup_dir / transaction_id}")
+            raise
     
     def _apply_file_hunks(self, file_path: str, hunks: List[DiffHunk]) -> PatchResult:
         """Apply all hunks for a single file transactionally."""
@@ -645,43 +948,154 @@ class DiffApplier:
     
     def _apply_single_hunk(self, file_lines: List[str], hunk: DiffHunk, offset: int) -> Tuple[bool, int]:
         """
-        Apply a single hunk to the file lines.
+        Apply a single hunk to the file lines with robust validation.
         
         Returns (success, new_offset) where new_offset is the change in line count.
         """
         # Adjust expected position by offset from previous edits
         expected_pos = max(0, hunk.old_start - 1 + offset)  # Convert to 0-based
         
-        # Build context for matching (removed lines + surrounding context)
-        context_for_match = hunk.removed_lines if hunk.removed_lines else hunk.context_lines
+        print(f"🔧 Applying hunk at expected position {expected_pos} (offset: {offset})")
         
-        # Find actual position using fuzzy matching
-        actual_pos = self.fuzzy_matcher.find_context_match(file_lines, context_for_match, expected_pos)
+        # For insertion-only hunks, handle specially
+        if not hunk.removed_lines and hunk.added_lines:
+            return self._apply_insertion_hunk(file_lines, hunk, expected_pos)
         
-        if actual_pos is None:
-            return False, offset
+        # For hunks with removals, we need precise matching
+        if hunk.removed_lines:
+            # Use removed lines as the primary context for matching
+            context_for_match = hunk.removed_lines
             
-        # Apply the change
-        if hunk.removed_lines and hunk.added_lines:
-            # Replace lines
-            del file_lines[actual_pos:actual_pos + len(hunk.removed_lines)]
-            for i, new_line in enumerate(hunk.added_lines):
-                file_lines.insert(actual_pos + i, new_line if new_line.endswith('\n') else new_line + '\n')
-            new_offset = offset + len(hunk.added_lines) - len(hunk.removed_lines)
-        elif hunk.removed_lines:
-            # Delete lines
-            del file_lines[actual_pos:actual_pos + len(hunk.removed_lines)]
-            new_offset = offset - len(hunk.removed_lines)
-        elif hunk.added_lines:
-            # Insert lines
-            for i, new_line in enumerate(hunk.added_lines):
-                file_lines.insert(actual_pos + i, new_line if new_line.endswith('\n') else new_line + '\n')
-            new_offset = offset + len(hunk.added_lines)
-        else:
-            # No change (context only)
-            new_offset = offset
+            # Find actual position using fuzzy matching
+            actual_pos = self.fuzzy_matcher.find_context_match(file_lines, context_for_match, expected_pos)
             
-        return True, new_offset
+            if actual_pos is None:
+                print(f"❌ Fuzzy matching failed - no position found for context")
+                return False, offset
+            
+            # CRITICAL: Validate the match quality before proceeding
+            match_quality = self._validate_match_quality(file_lines, context_for_match, actual_pos)
+            if match_quality < 0.8:  # Require 80% match confidence
+                print(f"❌ Match quality too low ({match_quality:.2f}) - aborting to prevent corruption")
+                return False, offset
+            
+            # Double-check bounds
+            if actual_pos + len(hunk.removed_lines) > len(file_lines):
+                print(f"❌ Bounds check failed - would delete beyond end of file")
+                return False, offset
+            
+            # Verify the content we're about to remove actually matches expectations
+            if not self._verify_removal_content(file_lines, hunk.removed_lines, actual_pos):
+                print(f"❌ Content verification failed - refusing to remove non-matching content")
+                return False, offset
+            
+            print(f"✅ Validated match at position {actual_pos} with quality {match_quality:.2f}")
+            
+            # Apply the change with validated position
+            if hunk.added_lines:
+                # Replace lines
+                del file_lines[actual_pos:actual_pos + len(hunk.removed_lines)]
+                for i, new_line in enumerate(hunk.added_lines):
+                    file_lines.insert(actual_pos + i, new_line if new_line.endswith('\n') else new_line + '\n')
+                new_offset = offset + len(hunk.added_lines) - len(hunk.removed_lines)
+            else:
+                # Delete lines only
+                del file_lines[actual_pos:actual_pos + len(hunk.removed_lines)]
+                new_offset = offset - len(hunk.removed_lines)
+                
+            return True, new_offset
+        
+        # Context-only hunks (no changes)
+        return True, offset
+    
+    def _apply_insertion_hunk(self, file_lines: List[str], hunk: DiffHunk, expected_pos: int) -> Tuple[bool, int]:
+        """Handle insertion-only hunks with safe positioning."""
+        # Clamp position to valid range
+        actual_pos = min(expected_pos, len(file_lines))
+        
+        print(f"📝 Inserting {len(hunk.added_lines)} lines at position {actual_pos}")
+        
+        # Insert lines
+        for i, new_line in enumerate(hunk.added_lines):
+            file_lines.insert(actual_pos + i, new_line if new_line.endswith('\n') else new_line + '\n')
+        
+        return True, len(hunk.added_lines)
+    
+    def _validate_match_quality(self, file_lines: List[str], context_lines: List[str], position: int) -> float:
+        """Calculate match quality score (0.0 to 1.0) for fuzzy match validation."""
+        if position + len(context_lines) > len(file_lines):
+            return 0.0
+        
+        file_slice = file_lines[position:position + len(context_lines)]
+        
+        if len(file_slice) != len(context_lines):
+            return 0.0
+        
+        matches = 0
+        total_lines = len(context_lines)
+        
+        for file_line, context_line in zip(file_slice, context_lines):
+            # Normalize lines for comparison (strip whitespace)
+            file_norm = file_line.strip()
+            context_norm = context_line.strip()
+            
+            if file_norm == context_norm:
+                matches += 1
+            elif len(file_norm) > 0 and len(context_norm) > 0:
+                # Partial match scoring based on similarity
+                similarity = self._calculate_line_similarity(file_norm, context_norm)
+                if similarity > 0.7:  # 70% similar counts as partial match
+                    matches += similarity
+        
+        return matches / total_lines if total_lines > 0 else 0.0
+    
+    def _calculate_line_similarity(self, line1: str, line2: str) -> float:
+        """Calculate similarity between two lines (0.0 to 1.0)."""
+        if line1 == line2:
+            return 1.0
+        
+        # Use simple character-based similarity
+        max_len = max(len(line1), len(line2))
+        if max_len == 0:
+            return 1.0
+        
+        # Count matching characters in same positions
+        matches = sum(1 for c1, c2 in zip(line1, line2) if c1 == c2)
+        
+        # Add bonus for matching key tokens
+        tokens1 = set(line1.split())
+        tokens2 = set(line2.split())
+        token_overlap = len(tokens1 & tokens2) / max(len(tokens1 | tokens2), 1)
+        
+        char_sim = matches / max_len
+        return (char_sim + token_overlap) / 2
+    
+    def _verify_removal_content(self, file_lines: List[str], expected_removals: List[str], position: int) -> bool:
+        """Verify that the content we plan to remove actually matches expectations."""
+        if position + len(expected_removals) > len(file_lines):
+            return False
+        
+        file_slice = file_lines[position:position + len(expected_removals)]
+        
+        # Allow for some whitespace flexibility but require structural match
+        for file_line, expected_line in zip(file_slice, expected_removals):
+            file_content = file_line.strip()
+            expected_content = expected_line.strip()
+            
+            # For structural code elements, require exact match
+            if any(keyword in expected_content for keyword in ['import', 'export', 'function', 'class', 'interface']):
+                if file_content != expected_content:
+                    print(f"❌ Structural mismatch: expected '{expected_content}' but found '{file_content}'")
+                    return False
+            
+            # For other content, allow reasonable similarity
+            elif expected_content and file_content:  # Skip empty lines
+                similarity = self._calculate_line_similarity(file_content, expected_content)
+                if similarity < 0.8:  # Require 80% similarity for non-structural content
+                    print(f"❌ Content mismatch: expected '{expected_content}' but found '{file_content}' (similarity: {similarity:.2f})")
+                    return False
+        
+        return True
     
     def _resolve_file_path(self, file_path: str) -> Optional[Path]:
         """Resolve file path safely within repo root."""
