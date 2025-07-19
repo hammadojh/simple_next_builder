@@ -327,7 +327,7 @@ You must respond with a JSON plan in this EXACT format:
 
 KEY PRINCIPLES FOR FRONTEND-ONLY PLANNING:
 1. For MVP specs, break into 5-15 tasks for comprehensive frontend implementation
-2. Include production-ready patterns (error handling, loading states, responsive design)
+        2. Include production-ready patterns (error handling, loading states, responsive design, modern UI components)
 3. Plan for proper component architecture and reusability
 4. Consider client-side data flow and state management needs
 5. Include proper routing setup and navigation (client-side only)
@@ -346,7 +346,7 @@ ENHANCED TASK TYPES FOR FRONTEND:
 - "validate_build": Test that app builds/runs correctly (frontend only)
 - "create_component": Create reusable React component with state management
 - "setup_routing": Configure NextJS client-side routing and navigation
-- "setup_styling": Configure styling system (Tailwind, CSS modules, etc.)
+        - "setup_styling": Configure styling system (shadcn/ui with Tailwind, etc.)
 - "create_layout": Create app layout and navigation structure
 - "setup_state": Configure client-side state management (useState, localStorage)
 - "add_features": Implement specific frontend feature functionality
@@ -492,7 +492,7 @@ Focus on creating rich, interactive, production-ready frontend applications."""
                         context_needed=["components", "layout"],
                         priority=2,
                         estimated_complexity="moderate",
-                        llm_instructions=f"Setup {mvp_spec.styling_approach} styling system with consistent theme, responsive design, and modern UI patterns. Focus on excellent user experience.",
+                        llm_instructions=f"Setup {mvp_spec.styling_approach} styling system with consistent theme, responsive design, and modern UI patterns. Use shadcn/ui components like Button, Input, Card, etc. for professional UI. Focus on excellent user experience with modern component library.",
                         validation_criteria=["Styling configured", "Theme consistent", "Responsive design", "Modern UI patterns"]
                     ),
                     Task(

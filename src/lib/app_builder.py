@@ -191,9 +191,11 @@ class MultiLLMAppBuilder:
    - TypeScript interfaces in /types directory
    - Utility functions in /lib directory (if needed)
 
-5. **STYLING**: Use Tailwind CSS for all styling:
-   ✅ CORRECT: `className="bg-blue-500 text-white px-4 py-2 rounded"`
-   ❌ WRONG: Inline styles or CSS modules (unless specifically requested)
+5. **STYLING**: Use shadcn/ui components with Tailwind CSS:
+   ✅ CORRECT: Import and use shadcn components: `import { Button } from "@/components/ui/button"`
+   ✅ CORRECT: Use shadcn semantic variants: `<Button variant="outline" size="lg">Click me</Button>`
+   ✅ CORRECT: Combine with Tailwind: `<Button className="w-full mt-4">Submit</Button>`
+   ❌ WRONG: Basic HTML elements for interactive components (use shadcn Button, Input, Card, etc.)
 
 6. **RESPONSIVE DESIGN**: Always include responsive classes:
    `className="w-full md:w-1/2 lg:w-1/3"`
@@ -222,15 +224,47 @@ class MultiLLMAppBuilder:
 
 10. **ACCESSIBILITY**: Include proper ARIA labels and semantic HTML
 
-🎯 **GOAL**: Create a production-ready, visually appealing, fully functional frontend application that users can immediately interact with and share. Focus on user experience and rich interactions, not backend complexity.
+11. **SHADCN/UI COMPONENTS**: ALWAYS use shadcn/ui components for modern, professional UI:
+    📦 **ESSENTIAL COMPONENTS TO USE**:
+    - `Button` (from "@/components/ui/button") - for all buttons
+    - `Input` (from "@/components/ui/input") - for form inputs  
+    - `Card, CardHeader, CardTitle, CardContent` (from "@/components/ui/card") - for containers
+    - Use Lucide React icons: `import { Plus, Trash2, Edit } from "lucide-react"`
+    
+    ✅ **CORRECT SHADCN USAGE**:
+    ```javascript
+    import { Button } from "@/components/ui/button"
+    import { Input } from "@/components/ui/input" 
+    import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
+    import { Plus, Search } from "lucide-react"
+    
+    <Card>
+      <CardHeader>
+        <CardTitle>Modern UI</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="flex gap-2">
+          <Input placeholder="Search..." />
+          <Button>
+            <Search className="h-4 w-4 mr-2" />
+            Search
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+    ```
+    
+    ❌ **AVOID**: Plain HTML buttons, inputs, divs for interactive elements
 
-Remember: FRONTEND ONLY - no auth, no database, no backend APIs. Rich UI/UX with local state management."""
+🎯 **GOAL**: Create a production-ready, visually appealing, fully functional frontend application that users can immediately interact with and share. Focus on user experience and rich interactions with modern shadcn/ui components, not backend complexity.
+
+Remember: FRONTEND ONLY - no auth, no database, no backend APIs. Rich UI/UX with shadcn/ui components and local state management."""
 
     def get_user_prompt(self, app_idea):
         """Create the user prompt with the app idea."""
-        return f"""Build a NextJS application for the following idea:
+        return """Build a NextJS application for the following idea:
 
-{app_idea}
+""" + app_idea + """
 
 IMPORTANT: All configuration files are already set up and working perfectly:
 - ✅ NextJS 14.0.0 with app router
@@ -320,7 +354,35 @@ ALWAYS INCLUDE:
 - Realistic mock data when needed
 - Error handling and loading states
 - Responsive design with Tailwind classes
-- Clean, modern UI with good UX
+- **shadcn/ui components for modern, professional UI**
+
+🎨 **REQUIRED UI COMPONENTS**: Use shadcn/ui for ALL interactive elements:
+- **Buttons**: `import { Button } from "@/components/ui/button"` with variants (default, outline, secondary, etc.)
+- **Inputs**: `import { Input } from "@/components/ui/input"` for all form fields
+- **Cards**: `import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"` for containers
+- **Icons**: `import { IconName } from "lucide-react"` for all icons (Plus, Trash2, Edit, Search, etc.)
+
+✅ **MODERN UI EXAMPLE**:
+```
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input" 
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
+import { Plus, Trash2 } from "lucide-react"
+
+<Card className="w-full max-w-md">
+  <CardHeader>
+    <CardTitle>Todo App</CardTitle>
+  </CardHeader>
+  <CardContent className="space-y-4">
+    <div className="flex gap-2">
+      <Input placeholder="Add new todo..." />
+      <Button size="icon">
+        <Plus className="h-4 w-4" />
+      </Button>
+    </div>
+  </CardContent>
+</Card>
+```
 
 **REMEMBER: Use <new filename="app/page.tsx"> for the main page, not <edit> tags!**
 

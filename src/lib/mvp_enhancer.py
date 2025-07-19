@@ -129,8 +129,8 @@ Transform this into a comprehensive FRONTEND MVP specification that includes:
 4. UI COMPONENTS: Specific React components needed
 5. DATA STRUCTURE: How data should be organized in component state or local storage
 6. ROUTING STRUCTURE: What pages/routes are needed
-7. STYLING APPROACH: Best approach for styling this type of app
-8. TECH STACK: Recommended frontend technologies (within NextJS ecosystem)
+7. STYLING APPROACH: Always use "shadcn/ui with tailwindcss" for modern, professional UI components
+8. TECH STACK: Recommended frontend technologies (within NextJS ecosystem, always include shadcn/ui)
 
 Format your response as JSON:
 {{
@@ -140,17 +140,17 @@ Format your response as JSON:
   "ui_components": ["component1", "component2", ...],
   "data_structure": {{"model1": {{"field1": "type", ...}}, ...}},
   "routing_structure": ["/route1", "/route2", ...],
-  "styling_approach": "tailwind/styled-components/css-modules/etc",
+  "styling_approach": "shadcn/ui with tailwindcss",
   "complexity_level": "simple/moderate/complex",
   "estimated_components": 5,
-  "suggested_tech_stack": ["nextjs", "react", "typescript", "tailwindcss", ...]
+  "suggested_tech_stack": ["nextjs", "react", "typescript", "shadcn/ui", "tailwindcss", "lucide-react", ...]
 }}
 
 Example enhancement:
 User says: "Todo app"
-Enhanced: "A comprehensive todo management frontend application with local storage persistence, drag-and-drop reordering, filtering and categorization, responsive design for mobile and desktop. Users can create, edit, delete, and organize todos with categories, priorities, and due dates. All data stored in browser local storage with export/import functionality."
+Enhanced: "A comprehensive todo management frontend application with modern shadcn/ui components, local storage persistence, drag-and-drop reordering, filtering and categorization, responsive design for mobile and desktop. Users can create, edit, delete, and organize todos with categories, priorities, and due dates using beautiful Card components, Input fields, and Button variants. All data stored in browser local storage with export/import functionality. Professional UI with consistent design system."
 
-Make it PRODUCTION-READY FRONTEND, not just a demo. Focus on rich UI/UX, not backend complexity."""
+Make it PRODUCTION-READY FRONTEND with MODERN UI COMPONENTS, not just a demo. Focus on rich UI/UX with shadcn/ui, not backend complexity."""
     
     def _call_enhancement_llm(self, prompt: str) -> Optional[str]:
         """Call the LLM to enhance the prompt."""
@@ -213,16 +213,16 @@ Make it PRODUCTION-READY FRONTEND, not just a demo. Focus on rich UI/UX, not bac
         """Create a basic MVP specification as fallback."""
         return MVPSpecification(
             original_prompt=original_prompt,
-            enhanced_prompt=f"A comprehensive frontend-only NextJS application implementing: {original_prompt}. Include responsive design, interactive UI components, local state management, localStorage persistence, error handling, loading states, and production-ready code structure. Focus on rich user experience without backend dependencies.",
+            enhanced_prompt=f"A comprehensive frontend-only NextJS application implementing: {original_prompt}. Include modern shadcn/ui components, responsive design, interactive UI components, local state management, localStorage persistence, error handling, loading states, and production-ready code structure. Focus on rich user experience with professional UI design and no backend dependencies.",
             core_features=[f"Interactive frontend for: {original_prompt}", "Responsive design", "Local data persistence"],
             technical_requirements=["responsive design", "error handling", "loading states", "localStorage integration", "component state management"],
             ui_components=["Layout", "Navigation", "MainContent", "Footer", "LoadingSpinner", "ErrorBoundary"],
             data_structure={"main": {"id": "string", "data": "any", "timestamp": "Date"}},
             routing_structure=["/", "/about"],
-            styling_approach="tailwind",
+            styling_approach="shadcn/ui with tailwindcss",
             complexity_level="moderate",
             estimated_components=5,
-            suggested_tech_stack=["nextjs", "react", "typescript", "tailwindcss"]
+            suggested_tech_stack=["nextjs", "react", "typescript", "shadcn/ui", "tailwindcss", "lucide-react"]
         )
     
     def format_mvp_for_coordinator(self, mvp_spec: MVPSpecification) -> str:
