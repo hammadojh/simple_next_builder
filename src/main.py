@@ -26,8 +26,9 @@ except ImportError:
     # dotenv not installed, continue without it
     pass
 
-# Add src directory to path for imports
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+# Add current and parent directories to path for imports
+sys.path.append(os.path.dirname(__file__))  # src directory
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))  # root directory
 
 from lib.app_builder import MultiLLMAppBuilder
 from lib.code_builder import CodeBuilder
@@ -142,40 +143,46 @@ class BuildErrorLogger:
 
 
 class MasterBuilder:
-    def __init__(self, openai_api_key=None, openrouter_api_key=None, anthropic_api_key=None):
-        """Initialize the master builder with all components."""
-        # Get current working directory as project root
-        self.project_root = Path.cwd()
+    def __init__(self, use_single_file_generation: bool = False):
+        """
+        Initialize the Master Builder.
+        
+        Args:
+            use_single_file_generation: If True, use new single-file approach (recommended)
+                                      If False, use legacy multi-file approach
+        """
+        self.project_root = Path(__file__).parent.parent
         self.apps_dir = self.project_root / "apps"
         self.inputs_dir = self.project_root / "inputs"
+        self.build_log_file = self.project_root / "build_errors.log"
         
-        # Initialize error logger
-        self.error_logger = BuildErrorLogger(str(self.project_root))
-        
-        # Initialize the AI app builder
-        self.app_builder = MultiLLMAppBuilder(
-            openai_api_key=openai_api_key,
-            openrouter_api_key=openrouter_api_key,
-            anthropic_api_key=anthropic_api_key
-        )
-        
-        # Initialize MVP enhancer for complex app development
-        self.mvp_enhancer = MVPEnhancer()
-        
-        # Initialize LLM coordinator for intelligent planning
-        self.coordinator = LLMCoordinator(self.app_builder)
-        
-        print(f"🏗️  Master Builder initialized in: {self.project_root}")
-        print(f"📁 Apps directory: {self.apps_dir}")
-        print(f"📄 Inputs directory: {self.inputs_dir}")
-        print(f"📋 Build error log: {self.error_logger.log_file}")
-        print(f"🎯 MVP Enhancer: Ready for complex app development")
-        print(f"🧠 LLM Coordinator: Ready for intelligent planning")
-        
-        # Create directories if they don't exist
+        # Create directories
         self.apps_dir.mkdir(exist_ok=True)
         self.inputs_dir.mkdir(exist_ok=True)
         
+        # Initialize builder components
+        self.app_builder = MultiLLMAppBuilder()
+        self.error_logger = BuildErrorLogger(str(self.project_root))
+        self.mvp_enhancer = MVPEnhancer()
+        
+        # Initialize LLM coordinator for intelligent planning
+        from lib.llm_coordinator import LLMCoordinator
+        self.coordinator = LLMCoordinator(self.app_builder)
+        
+        # NEW: Choose generation approach
+        self.use_single_file_generation = use_single_file_generation
+        print(f"🎯 Generation mode: {'Single-file (recommended)' if use_single_file_generation else 'Multi-file (legacy)'}")
+        
+        print("🏗️  Master Builder initialized in:", self.project_root)
+        print("📁 Apps directory:", self.apps_dir)
+        print("📄 Inputs directory:", self.inputs_dir)
+        print("📋 Build error log:", self.build_log_file)
+        
+        if hasattr(self, 'mvp_enhancer'):
+            print("🎯 MVP Enhancer: Ready for complex app development")
+        if hasattr(self, 'coordinator') and self.coordinator:
+            print("🧠 LLM Coordinator: Ready for intelligent planning")
+    
     def get_next_app_name(self, base_name: str = "myapp") -> str:
         """Get the next available app name (myapp4, myapp5, etc.)."""
         version = 1
@@ -269,22 +276,37 @@ export default nextConfig;"""
         print(f"🤖 Generating AI changes for: {app_idea}")
         
         try:
-            # Generate the app content
-            generated_content = self.app_builder.generate_app(app_idea)
-            
-            if not generated_content:
-                print("❌ Failed to generate AI content")
-                return None
-            
-            # Create app-specific input directory
-            app_input_dir = self.inputs_dir / app_name
-            app_input_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Save to file with metadata
-            timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-            output_filename = app_input_dir / f"input_v1_{timestamp}.txt"
-            
-            header = f"""<!-- 
+            if self.use_single_file_generation:
+                print("🚀 Using new single-file generation approach...")
+                
+                # Use the new single-file approach
+                success = self.app_builder.generate_app_with_single_files(app_idea)
+                
+                if success:
+                    print("✅ Single-file generation completed successfully!")
+                    return "SUCCESS"  # Return success indicator for single-file approach
+                else:
+                    print("❌ Single-file generation failed")
+                    return None
+            else:
+                print("🔄 Using legacy multi-file generation approach...")
+                
+                # Use the legacy approach
+                generated_content = self.app_builder.generate_app(app_idea)
+                
+                if not generated_content:
+                    print("❌ Failed to generate AI content")
+                    return None
+                
+                # Create app-specific input directory
+                app_input_dir = self.inputs_dir / app_name
+                app_input_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Save to file with metadata
+                timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+                output_filename = app_input_dir / f"input_v1_{timestamp}.txt"
+                
+                header = f"""<!-- 
 Generated NextJS Application
 App Idea: {app_idea}
 Generated: {time.strftime("%Y-%m-%d %H:%M:%S")}
@@ -292,33 +314,43 @@ Multi-LLM Builder with validation
 -->
 
 """
-            
-            with open(output_filename, 'w', encoding='utf-8') as f:
-                f.write(header + generated_content)
-            
-            print(f"✅ AI changes saved to: {output_filename}")
-            return str(output_filename)
+                
+                with open(output_filename, 'w', encoding='utf-8') as f:
+                    f.write(header + generated_content)
+                
+                print(f"✅ AI changes saved to: {output_filename}")
+                return str(output_filename)
             
         except Exception as e:
             print(f"❌ Error generating AI changes: {str(e)}")
             return None
     
     def apply_changes(self, input_file: str, app_directory: str) -> bool:
-        """
-        Apply code changes from input file to app directory using CodeBuilder.
+        """Apply changes from input file to app directory."""
+        print(f"🔧 Applying changes to: {app_directory}")
         
-        Args:
-            input_file: Path to the input file with code changes
-            app_directory: Path to the target app directory
-            
-        Returns:
-            True if changes were applied successfully, False otherwise
-        """
         try:
-            # Create and run the code builder with error logging
-            builder = CodeBuilder(input_file, app_directory, self.error_logger)
-            builder.build()
-            return True
+            # NEW: Handle single-file generation approach
+            if input_file == "SUCCESS":
+                print("✅ Changes already applied by single-file generation")
+                return True
+            
+            # Legacy approach: process input file
+            if not os.path.exists(input_file):
+                print(f"❌ Input file not found: {input_file}")
+                return False
+            
+            # Use CodeBuilder to apply changes
+            code_builder = CodeBuilder(input_file, app_directory, self.error_logger)
+            success = code_builder.build()
+            
+            if success:
+                print("✅ Changes applied successfully")
+            else:
+                print("❌ Failed to apply changes")
+            
+            return success
+            
         except Exception as e:
             print(f"❌ Error applying changes: {str(e)}")
             return False
@@ -347,40 +379,57 @@ Multi-LLM Builder with validation
             return False
     
     def run_nextjs_app(self, app_directory: str, port: Optional[int] = None) -> None:
-        """Start the NextJS development server on an available port."""
-        # Find an available port if none specified
-        if port is None:
-            port = self.find_available_port(3000)
-            print(f"🔍 Auto-detected available port: {port}")
-        else:
-            # Check if specified port is available
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.bind(('localhost', port))
-                sock.close()
-                print(f"✅ Port {port} is available")
-            except OSError:
-                print(f"⚠️  Port {port} is in use, finding alternative...")
-                port = self.find_available_port(port)
-                print(f"🔍 Using available port: {port}")
-        
-        print(f"🚀 Starting NextJS app in {app_directory} on port {port}")
-        print(f"🌐 App will be available at: http://localhost:{port}")
-        print("📝 Press Ctrl+C to stop the server")
-        print("-" * 60)
-        
+        """Start the NextJS development server for an app."""
         try:
+            import subprocess
+            import os
+            
+            app_path = Path(app_directory)
+            app_name = app_path.name
+            
+            print(f"🚀 Starting development server for {app_name}...")
+            
+            # Change to app directory
+            os.chdir(app_path)
+            
+            # Determine port
+            if port is None:
+                port = self._find_available_port(3000)
+            
+            print(f"🌐 Server will start on http://localhost:{port}")
+            print("🛑 Press Ctrl+C to stop the server")
+            print("-" * 50)
+            
             # Start the development server
-            subprocess.run(
-                ["npm", "run", "dev", "--", "--port", str(port)],
-                cwd=app_directory
-            )
+            cmd = ["npm", "run", "dev", "--", "--port", str(port)]
+            subprocess.run(cmd, check=True)
+            
         except KeyboardInterrupt:
-            print("\n🛑 Development server stopped")
+            print(f"\n🛑 Development server stopped")
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Failed to start development server: {e}")
         except Exception as e:
-            print(f"❌ Error running NextJS app: {str(e)}")
-    
-    def build_and_run(self, app_idea: str, app_name: Optional[str] = None, port: Optional[int] = None) -> bool:
+            print(f"❌ Error running app: {str(e)}")
+        finally:
+            # Change back to project root
+            os.chdir(self.project_root)
+
+    def _find_available_port(self, start_port: int = 3000) -> int:
+        """Find an available port starting from the given port."""
+        import socket
+        
+        port = start_port
+        while port < start_port + 100:  # Try up to 100 ports
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(('localhost', port))
+                    return port
+            except socket.error:
+                port += 1
+        
+        return start_port  # Fallback to original port
+
+    def build_and_run_enhanced(self, app_idea: str, app_name: Optional[str] = None, port: Optional[int] = None) -> bool:
         """
         Enhanced workflow to build and run complex NextJS apps:
         1. MVP Enhancement - Transform user idea into comprehensive specification
@@ -693,53 +742,45 @@ Frontend-Only MVP Builder with intelligent coordination
         return '\n'.join(structure_info)
     
     def edit_existing_app(self, app_directory: str, edit_idea: str) -> bool:
-        """Edit an existing NextJS app using the robust intent-based approach (with diff fallback)."""
-        app_name = Path(app_directory).name
-        print("✏️  NextJS App Editor (Intent-Based + Robust Fallbacks)")
-        print("=" * 50)
-        print(f"App Directory: {app_directory}")
-        print(f"Edit Request: {edit_idea}")
-        print("-" * 50)
-        
-        # Log the start of edit operation
-        self.error_logger.log_build_attempt(app_name, f"edit: {edit_idea[:50]}...", None)
-        
+        """Edit an existing app with new features or changes."""
         try:
-            # Use existing app builder instance with configured API keys
-            print("🔧 Initializing robust intent-based editor...")
-            app_builder = self.app_builder
-            app_builder.app_name = app_name  # Set the app name
-            app_builder.apps_dir = Path(app_directory).parent  # Set the apps directory
+            print(f"✏️ Editing app: {Path(app_directory).name}")
+            print(f"🎯 Changes: {edit_idea}")
             
-            # Use the robust intent-based edit_app method (with diff fallback)
-            print("🚀 Applying intent-based edits (more robust)...")
-            success = app_builder.edit_app(edit_idea, use_intent_based=True)
+            # Set the app path for the builder
+            app_path = Path(app_directory)
+            self.app_builder.app_name = app_path.name
+            self.app_builder.apps_dir = app_path.parent
+            
+            # Use the edit method from app_builder
+            success = self.app_builder.edit_app(edit_idea, use_intent_based=True)
             
             if success:
-                print("✅ Edits applied successfully using robust intent-based approach!")
-                self.error_logger.log_build_attempt(app_name, f"edit: {edit_idea[:50]}...", True)
+                print("✅ App edited successfully!")
                 return True
             else:
-                print("❌ Intent-based edit failed (all fallback strategies exhausted)")
-                self.error_logger.log_build_attempt(app_name, f"edit: {edit_idea[:50]}...", False)
+                print("❌ Failed to edit app")
                 return False
-            
+                
         except Exception as e:
             print(f"❌ Error editing app: {str(e)}")
-            self.error_logger.log_build_attempt(app_name, f"edit: {edit_idea[:50]}...", False)
             return False
     
-    def list_existing_apps(self) -> list:
-        """List all existing NextJS apps in the apps directory."""
-        if not self.apps_dir.exists():
+    def list_existing_apps(self) -> List[str]:
+        """List all existing NextJS apps."""
+        try:
+            apps = []
+            if self.apps_dir.exists():
+                for item in self.apps_dir.iterdir():
+                    if item.is_dir() and not item.name.startswith('.'):
+                        # Check if it's a NextJS app (has package.json)
+                        package_json = item / "package.json"
+                        if package_json.exists():
+                            apps.append(item.name)
+            return sorted(apps)
+        except Exception as e:
+            print(f"⚠️ Error listing apps: {e}")
             return []
-        
-        apps = []
-        for item in self.apps_dir.iterdir():
-            if item.is_dir() and (item / "package.json").exists():
-                apps.append(item.name)
-        
-        return sorted(apps)
 
     def validate_and_fix_build(self, app_directory: str, max_time_minutes: int = 10) -> bool:
         """
@@ -1494,80 +1535,258 @@ Frontend-Only MVP Builder with intelligent coordination
         
         return errors
 
+    def build_and_run(self, app_idea: str, app_name: Optional[str] = None, port: Optional[int] = None) -> bool:
+        """
+        Build and run a NextJS app (defaults to enhanced mode).
+        
+        This is a convenience method that calls build_and_run_enhanced.
+        """
+        return self.build_and_run_enhanced(app_idea, app_name, port)
+
+    def build_and_run_single_file(self, app_idea: str, app_name: Optional[str] = None, port: Optional[int] = None) -> bool:
+        """
+        Build and run a NextJS app using the new single-file generation approach.
+        
+        This method creates files one at a time to avoid truncation issues.
+        """
+        print("🚀 Starting single-file generation process...")
+        
+        # Generate app name if not provided
+        if not app_name:
+            app_name = self.get_next_app_name()
+        
+        app_directory = str(self.apps_dir / app_name)
+        
+        try:
+            # Step 1: Create NextJS template
+            print(f"📱 Creating NextJS app: {app_name}")
+            if not self.create_template_nextjs_app(app_name):
+                print("❌ Failed to create NextJS template")
+                return False
+            
+            # Step 2: Set up app builder context
+            print(f"🔧 Setting up app builder for: {app_name}")
+            self.app_builder.app_name = app_name
+            self.app_builder.apps_dir = self.apps_dir
+            
+            # Step 3: Generate files using single-file approach
+            print(f"🎯 Generating app files...")
+            success = self.app_builder.generate_app_with_single_files(app_idea)
+            
+            if not success:
+                print("❌ Failed to generate app files")
+                return False
+            
+            # Step 4: Install dependencies and validate
+            print(f"📦 Installing dependencies...")
+            if not self.install_dependencies(app_directory):
+                print("⚠️ Failed to install dependencies, trying to continue...")
+            
+            # Step 5: Build validation
+            print(f"🔨 Validating build...")
+            self.app_builder.app_name = app_name  # Ensure context is set
+            if not self.app_builder.build_and_fix_errors():
+                print("❌ Build validation failed")
+                print("🔍 Please check the error messages above for details:")
+                print("   • If you see 'executor bugs', the system needs debugging")
+                print("   • If you see build errors, review the generated code")
+                print("   • You can manually fix issues and run 'npm run build' to test")
+                
+                # Ask user what to do instead of automatically starting with errors
+                import sys
+                try:
+                    response = input("\n🤔 Start dev server anyway? (y/N): ").strip().lower()
+                    if response not in ['y', 'yes']:
+                        print("🛑 Stopping. Fix the issues and try again.")
+                        return False
+                    print("⚠️ Starting dev server with known issues...")
+                except (KeyboardInterrupt, EOFError):
+                    print("\n🛑 Stopping. Fix the issues and try again.")
+                    return False
+            
+            # Step 6: Start development server
+            if port is None:
+                port = self.find_available_port()
+            
+            print(f"🚀 Starting development server on port {port}...")
+            self.run_nextjs_app(app_directory, port)
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error in single-file generation: {str(e)}")
+            return False
+
+    def build_and_run_anti_truncation(self, app_idea: str, app_name: Optional[str] = None, port: Optional[int] = None) -> bool:
+        """
+        Build and run a NextJS app using the efficient anti-truncation approach.
+        
+        This method uses a single API call with a focused, shorter prompt to prevent
+        truncation while being much more token-efficient than the file-by-file approach.
+        """
+        print("🎯 Starting anti-truncation generation process...")
+        print("   ✅ Uses 1 API call instead of 15-20+")
+        print("   ✅ Focused prompts prevent truncation")
+        print("   ✅ 10x-20x more token efficient")
+        
+        # Generate app name if not provided
+        if not app_name:
+            app_name = self.get_next_app_name()
+        
+        app_directory = str(self.apps_dir / app_name)
+        
+        try:
+            # Step 1: Create NextJS template
+            print(f"📱 Creating NextJS app: {app_name}")
+            if not self.create_template_nextjs_app(app_name):
+                print("❌ Failed to create NextJS template")
+                return False
+            
+            # Step 2: Set up app builder context
+            print(f"🔧 Setting up app builder for: {app_name}")
+            self.app_builder.app_name = app_name
+            self.app_builder.apps_dir = self.apps_dir
+            
+            # Step 3: Generate using anti-truncation approach
+            print(f"🎯 Generating app with focused prompt...")
+            ai_content = self.app_builder.generate_app_with_anti_truncation(app_idea)
+            
+            if not ai_content:
+                print("❌ Failed to generate app content")
+                return False
+            
+            # Step 4: Apply the generated content
+            print(f"🔧 Applying generated content...")
+            
+            # Create app-specific input directory and save content
+            app_input_dir = self.inputs_dir / app_name
+            app_input_dir.mkdir(parents=True, exist_ok=True)
+            
+            timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+            input_file = app_input_dir / f"anti_truncation_{timestamp}.txt"
+            
+            with open(input_file, 'w', encoding='utf-8') as f:
+                f.write(ai_content)
+            
+            # Apply changes using CodeBuilder
+            success = self.apply_changes(str(input_file), app_directory)
+            
+            if not success:
+                print("❌ Failed to apply changes")
+                return False
+            
+            # Step 5: Install dependencies and validate
+            print(f"📦 Installing dependencies...")
+            if not self.install_dependencies(app_directory):
+                print("⚠️ Failed to install dependencies, trying to continue...")
+            
+            # Step 6: Build validation
+            print(f"🔨 Validating build...")
+            self.app_builder.app_name = app_name
+            if not self.app_builder.build_and_fix_errors():
+                print("❌ Build validation failed")
+                print("🔍 Please check the error messages above for details:")
+                print("   • If you see 'executor bugs', the system needs debugging")
+                print("   • If you see build errors, review the generated code")
+                print("   • You can manually fix issues and run 'npm run build' to test")
+                
+                # Ask user what to do instead of automatically starting with errors
+                import sys
+                try:
+                    response = input("\n🤔 Start dev server anyway? (y/N): ").strip().lower()
+                    if response not in ['y', 'yes']:
+                        print("🛑 Stopping. Fix the issues and try again.")
+                        return False
+                    print("⚠️ Starting dev server with known issues...")
+                except (KeyboardInterrupt, EOFError):
+                    print("\n🛑 Stopping. Fix the issues and try again.")
+                    return False
+            
+            # Step 7: Start development server
+            if port is None:
+                port = self.find_available_port()
+            
+            print(f"🚀 Starting development server on port {port}...")
+            self.run_nextjs_app(app_directory, port)
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error in anti-truncation generation: {str(e)}")
+            return False
+
 
 def main():
-    """Main function to run the master builder."""
-    parser = argparse.ArgumentParser(
-        description="Master NextJS App Builder - Complete automation from idea to running app",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python src/main.py --idea "A todo list app with dark mode"
-  python src/main.py --idea "Calculator app" --name "my-calculator" --port 3001
-  python src/main.py --edit myapp2 --idea "Add a reset button"
-  python src/main.py --interactive
-  python src/main.py --idea "Complex e-commerce site" --coordinator
-  python src/main.py --idea "Simple counter" --no-coordinator
-        """
-    )
-    
-    parser.add_argument("--openai-key", help="OpenAI API key (or set OPENAI_API_KEY env var)")
-    parser.add_argument("--openrouter-key", help="OpenRouter API key (or set OPENROUTER_API_KEY env var)")
-    parser.add_argument("--anthropic-key", help="Anthropic API key (or set ANTHROPIC_API_KEY env var)")
-    parser.add_argument('-i', '--idea', type=str, help='App idea/description')
-    parser.add_argument('-n', '--name', type=str, help='Custom app name (optional)')
-    parser.add_argument('-p', '--port', type=int, help='Port number for dev server (auto-detect if not specified)')
+    parser = argparse.ArgumentParser(description='NextJS App Builder with Multi-LLM Support and MVP Enhancement')
+    parser.add_argument('-i', '--idea', type=str, help='App idea description')
+    parser.add_argument('-n', '--name', type=str, help='App name (optional)')
+    parser.add_argument('-p', '--port', type=int, default=3000, help='Development server port')
+    parser.add_argument('--enhanced', action='store_true', help='Use enhanced MVP mode (default)')
+    parser.add_argument('--legacy', action='store_true', help='Use legacy mode')
+    parser.add_argument('--single-file', action='store_true', help='Use new single-file generation (recommended to avoid truncation)')
+    parser.add_argument('--anti-truncation', action='store_true', help='Use efficient anti-truncation approach (RECOMMENDED - 1 call, shorter prompt)')
     parser.add_argument('--interactive', action='store_true', help='Run in interactive mode')
     parser.add_argument('-e', '--edit', type=str, help='Edit existing app by name')
-    parser.add_argument('--legacy', action='store_true', help='Use legacy simple mode instead of enhanced MVP mode')
     
     args = parser.parse_args()
     
     try:
-        # Initialize the master builder
-        master = MasterBuilder(
-            openai_api_key=args.openai_key,
-            openrouter_api_key=args.openrouter_key,
-            anthropic_api_key=args.anthropic_key
-        )
+        # Initialize builder with chosen generation approach
+        builder = MasterBuilder(use_single_file_generation=args.single_file)
+        
+        if args.single_file:
+            print("🎯 Using new single-file generation approach (recommended)")
+            print("   ✅ Prevents AI response truncation")
+            print("   ✅ Better error handling per file")
+            print("   ✅ More reliable file generation")
+        else:
+            print("🔄 Using legacy multi-file generation approach")
+            print("   ⚠️  May experience truncation with complex apps")
         
         # Handle edit mode
         if args.edit:
             if not args.idea:
                 print("❌ Error: --idea is required when using --edit")
-                sys.exit(1)
+                return
             
-            app_directory = master.apps_dir / args.edit
+            app_directory = builder.apps_dir / args.edit
             if not app_directory.exists():
                 print(f"❌ Error: App '{args.edit}' not found")
-                existing_apps = master.list_existing_apps()
+                existing_apps = builder.list_existing_apps()
                 if existing_apps:
                     print("\nAvailable apps:")
                     for app in existing_apps:
                         print(f"  • {app}")
-                sys.exit(1)
+                return
             
-            success = master.edit_existing_app(str(app_directory), args.idea)
+            success = builder.edit_existing_app(str(app_directory), args.idea)
             if success:
                 print(f"\n🎉 Successfully edited {args.edit}!")
                 # Ask if user wants to run the app
                 try:
                     response = input("🚀 Start the development server? [Y/n]: ").strip().lower()
                     if response in ['', 'y', 'yes']:
-                        master.run_nextjs_app(str(app_directory), args.port)
+                        builder.run_nextjs_app(str(app_directory), args.port)
                 except KeyboardInterrupt:
                     print("\n👋 Edit complete!")
-                sys.exit(0)
-            else:
-                sys.exit(1)
+            return
         
+        # Handle interactive mode
         if args.interactive or not args.idea:
-            # Interactive mode
             print("🎯 NextJS Master Builder - Interactive Mode")
             print("=" * 50)
             
+            # Show generation mode
+            if args.anti_truncation:
+                mode_info = "Anti-truncation (RECOMMENDED)"
+            elif args.single_file:
+                mode_info = "Single-file (expensive)"
+            else:
+                mode_info = "Enhanced MVP (default)"
+            print(f"📁 Generation mode: {mode_info}")
+            
             # Show existing apps
-            existing_apps = master.list_existing_apps()
+            existing_apps = builder.list_existing_apps()
             if existing_apps:
                 print("📱 Existing apps:", ", ".join(existing_apps))
                 print()
@@ -1576,8 +1795,12 @@ Examples:
             print("  • Enter app idea to create new app")
             print("  • Type 'edit <app_name>' to edit existing app")
             print("  • Type 'list' to show existing apps")
+            print("  • Type 'mode' to cycle through generation modes")
             print("  • Type 'quit' to exit")
             print()
+            
+            # Track current mode
+            current_mode = "anti_truncation" if args.anti_truncation else ("single_file" if args.single_file else "enhanced")
             
             while True:
                 try:
@@ -1588,7 +1811,7 @@ Examples:
                         break
                     
                     if user_input.lower() == 'list':
-                        existing_apps = master.list_existing_apps()
+                        existing_apps = builder.list_existing_apps()
                         if existing_apps:
                             print("📱 Existing apps:")
                             for app in existing_apps:
@@ -1597,13 +1820,29 @@ Examples:
                             print("📱 No existing apps found")
                         continue
                     
+                    if user_input.lower() == 'mode':
+                        # Cycle through modes: enhanced -> anti_truncation -> single_file -> enhanced
+                        if current_mode == "enhanced":
+                            current_mode = "anti_truncation"
+                            mode_name = "Anti-truncation (RECOMMENDED)"
+                        elif current_mode == "anti_truncation":
+                            current_mode = "single_file"
+                            mode_name = "Single-file (expensive)"
+                        else:  # single_file
+                            current_mode = "enhanced"
+                            mode_name = "Enhanced MVP (default)"
+                        
+                        # No need to reinitialize builder for mode switching
+                        print(f"🔄 Switched to {mode_name} generation mode")
+                        continue
+                    
                     if user_input.lower().startswith('edit '):
                         app_name = user_input[5:].strip()
                         if not app_name:
                             print("⚠️  Please specify app name: edit <app_name>")
                             continue
                         
-                        app_directory = master.apps_dir / app_name
+                        app_directory = builder.apps_dir / app_name
                         if not app_directory.exists():
                             print(f"❌ App '{app_name}' not found")
                             continue
@@ -1614,7 +1853,7 @@ Examples:
                             continue
                         
                         print()
-                        success = master.edit_existing_app(str(app_directory), edit_idea)
+                        success = builder.edit_existing_app(str(app_directory), edit_idea)
                         
                         if success:
                             print(f"\n🎉 Successfully edited {app_name}!")
@@ -1622,7 +1861,7 @@ Examples:
                             try:
                                 response = input("🚀 Start the development server? [Y/n]: ").strip().lower()
                                 if response in ['', 'y', 'yes']:
-                                    master.run_nextjs_app(str(app_directory), None)
+                                    builder.run_nextjs_app(str(app_directory), None)
                             except KeyboardInterrupt:
                                 print("\n👋 Edit complete!")
                         else:
@@ -1636,23 +1875,24 @@ Examples:
                         continue
                     
                     # Create new app
-                    # Ask for custom name
                     custom_name = input("📱 App name (press Enter for auto): ").strip()
                     if not custom_name:
                         custom_name = None
                     
-                    # Ask for port
                     port_input = input(f"🌐 Port [auto-detect]: ").strip()
                     port = int(port_input) if port_input else None
                     
                     print()
                     
-                    # Build and run - use legacy mode if in interactive (for compatibility)
-                    # or enhanced MVP mode for better results
-                    if getattr(args, 'legacy', False):
-                        success = master.build_and_run_legacy(user_input, custom_name, port)
+                    # Build and run based on mode
+                    if current_mode == "anti_truncation":
+                        success = builder.build_and_run_anti_truncation(user_input, custom_name, port)
+                    elif current_mode == "single_file":
+                        success = builder.build_and_run_single_file(user_input, custom_name, port)
+                    elif args.legacy:
+                        success = builder.build_and_run_legacy(user_input, custom_name, port)
                     else:
-                        success = master.build_and_run(user_input, custom_name, port)
+                        success = builder.build_and_run_enhanced(user_input, custom_name, port)
                     
                     if success:
                         print(f"\n🎉 Success! App created and ready to use.")
@@ -1667,25 +1907,40 @@ Examples:
                 except ValueError:
                     print("⚠️  Invalid input")
                     continue
+            return
+        
+        # Single command mode
+        if not args.idea:
+            print("❌ Please provide an app idea using -i or --idea")
+            print("Example: python src/main.py -i 'a todo app with categories'")
+            print("Or use --interactive for interactive mode")
+            return
+        
+        # Set mode based on arguments
+        if args.anti_truncation:
+            print("🎯 Using anti-truncation mode (RECOMMENDED - efficient & reliable)")
+            success = builder.build_and_run_anti_truncation(args.idea, args.name, args.port)
+        elif args.single_file:
+            print("🎯 Using single-file generation mode (expensive but thorough)")
+            success = builder.build_and_run_single_file(args.idea, args.name, args.port)
+        elif args.legacy:
+            print("🎯 Using legacy mode")
+            success = builder.build_and_run_legacy(args.idea, args.name, args.port)
         else:
-            # Single run mode - choose enhanced MVP or legacy mode
-            if args.legacy:
-                print("🔧 Using legacy simple mode")
-                success = master.build_and_run_legacy(args.idea, args.name, args.port)
-            else:
-                print("🎯 Using enhanced MVP mode (default)")
-                success = master.build_and_run(args.idea, args.name, args.port)
-            if success:
-                sys.exit(0)
-            else:
-                sys.exit(1)
-                
+            print("🎯 Using enhanced MVP mode (default)")
+            success = builder.build_and_run_enhanced(args.idea, args.name, args.port)
+        
+        if success:
+            print("🎉 Application built and running successfully!")
+        else:
+            print("❌ Application build failed")
+            
     except KeyboardInterrupt:
-        print("\n\n👋 Interrupted by user")
-        sys.exit(0)
+        print("\n👋 Goodbye!")
     except Exception as e:
-        print(f"❌ Error: {str(e)}")
-        sys.exit(1)
+        print(f"❌ Fatal error: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":

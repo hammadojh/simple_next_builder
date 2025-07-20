@@ -439,12 +439,11 @@ class IntentBasedEditor:
                     
                     print(f"      [{i}/{len(intents)}] {intent.action}: {intent.context[:50]}{'...' if len(intent.context) > 50 else ''}")
                     
-                    # Use centralized progress system
-                    with show_progress(f"{intent.action} operation", LoaderStyle.SPINNER):
-                        # ENHANCED: Use structural processor for safer edits
-                        current_content = self.structural_processor.apply_intent_structurally(
-                            current_content, intent, file_path
-                        )
+                    # Use simple progress indication to avoid conflicts with output
+                    # ENHANCED: Use structural processor for safer edits
+                    current_content = self.structural_processor.apply_intent_structurally(
+                        current_content, intent, file_path
+                    )
                     
                     print(f"         ✅ Applied {intent.action}")
             
@@ -632,9 +631,28 @@ def parse_ai_intent_response_robust(ai_response: str) -> List[EditIntent]:
     # Strategy 1: Try clean JSON parsing
     print("📋 Strategy 1: Attempting structured JSON parsing...")
     try:
+        # Try multiple JSON extraction patterns
+        json_str = None
+        
+        # Pattern 1: JSON in markdown code block
         json_match = re.search(r'```json\s*(.*?)\s*```', ai_response, re.DOTALL)
         if json_match:
             json_str = json_match.group(1)
+        
+        # Pattern 2: JSON in generic code block
+        if not json_str:
+            json_match = re.search(r'```\s*(\{.*?\})\s*```', ai_response, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+        
+        # Pattern 3: Raw JSON (first { to last })
+        if not json_str:
+            start_brace = ai_response.find('{')
+            end_brace = ai_response.rfind('}')
+            if start_brace != -1 and end_brace != -1 and end_brace > start_brace:
+                json_str = ai_response[start_brace:end_brace + 1]
+        
+        if json_str:
             # Fix template literals if present
             json_str = _fix_template_literals_in_json(json_str)
             data = json.loads(json_str)

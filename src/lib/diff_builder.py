@@ -303,6 +303,7 @@ class CorruptionAwareDiffApplier:
         
         ENHANCED: Now includes pre-patch corruption detection and
         automatic recovery for corrupted files.
+        NEW: Real-time context verification to prevent staleness mismatches.
         """
         print("🔄 Starting corruption-aware patch application...")
         
@@ -322,8 +323,21 @@ class CorruptionAwareDiffApplier:
         
         print(f"📁 Transaction will modify {len(hunks_by_file)} files")
         
+        # NEW: Real-time context verification
+        print("🔍 Phase 0a: Real-time context verification...")
+        context_verification = self._verify_context_freshness(hunks_by_file)
+        if not context_verification["all_fresh"]:
+            stale_files = context_verification["stale_files"]
+            print(f"⚠️ Context staleness detected in {len(stale_files)} files:")
+            for file_path, mismatch_info in stale_files.items():
+                print(f"   📄 {file_path}: {mismatch_info}")
+            
+            # Ask if we should continue or regenerate
+            print("🤔 Options: (1) Continue with fuzzy matching (2) Request context refresh")
+            print("   Proceeding with enhanced fuzzy matching...")
+        
         # ENHANCED: Pre-patch corruption detection
-        print("🔍 Phase 0: Pre-patch corruption detection...")
+        print("🔍 Phase 0b: Pre-patch corruption detection...")
         corruption_issues = self._detect_target_file_corruption(hunks_by_file.keys())
         
         if corruption_issues:
@@ -509,6 +523,86 @@ class CorruptionAwareDiffApplier:
             pass
         
         return False
+    
+    def _verify_context_freshness(self, hunks_by_file: Dict[str, List]) -> Dict[str, Any]:
+        """
+        NEW: Verify that the expected context in diffs matches current file reality.
+        
+        This prevents the classic AI context staleness problem where the AI generates
+        diffs based on outdated context snapshots.
+        
+        Args:
+            hunks_by_file: Dictionary mapping file paths to their hunks
+            
+        Returns:
+            Dictionary with verification results
+        """
+        verification_result = {
+            "all_fresh": True,
+            "stale_files": {},
+            "total_checked": 0,
+            "context_matches": 0
+        }
+        
+        for file_path, file_hunks in hunks_by_file.items():
+            target_file = self._resolve_file_path(file_path)
+            if not target_file or not target_file.exists():
+                continue
+            
+            try:
+                # Read current file content
+                current_content = target_file.read_text()
+                current_lines = current_content.splitlines()
+                
+                verification_result["total_checked"] += 1
+                
+                # Check if ANY expected context from the hunks exists in current file
+                context_found = False
+                sample_context = []
+                
+                for hunk in file_hunks[:3]:  # Check first 3 hunks
+                    # Look for context lines that should exist
+                    for line in hunk.lines:
+                        if line.startswith(' '):  # Context line (unchanged)
+                            context_line = line[1:].strip()  # Remove the space prefix
+                            if context_line and context_line in current_content:
+                                context_found = True
+                                break
+                            elif context_line:
+                                sample_context.append(context_line[:50])
+                    
+                    if context_found:
+                        break
+                
+                if context_found:
+                    verification_result["context_matches"] += 1
+                else:
+                    verification_result["all_fresh"] = False
+                    verification_result["stale_files"][file_path] = {
+                        "issue": "Expected context not found in current file",
+                        "sample_expected": sample_context[:3],
+                        "current_start": current_lines[:3] if current_lines else ["<empty file>"]
+                    }
+                    
+            except Exception as e:
+                verification_result["stale_files"][file_path] = {
+                    "issue": f"Could not verify context: {e}",
+                    "sample_expected": [],
+                    "current_start": []
+                }
+                verification_result["all_fresh"] = False
+        
+        # Report summary
+        fresh_count = verification_result["context_matches"]
+        total_count = verification_result["total_checked"]
+        
+        if verification_result["all_fresh"]:
+            print(f"✅ Context verification: {fresh_count}/{total_count} files have fresh context")
+        else:
+            stale_count = len(verification_result["stale_files"])
+            print(f"⚠️ Context verification: {stale_count}/{total_count} files have stale context")
+        
+        return verification_result
     
     def _validate_all_changes(self, hunks_by_file: Dict[str, List]) -> List[PatchResult]:
         """Pre-validate all changes without applying them."""

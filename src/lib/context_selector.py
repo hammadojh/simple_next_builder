@@ -411,15 +411,48 @@ Focus on RELEVANCE over completeness. It's better to have precise context than o
         ]
         
         for file in selection.selected_files:
-            context_parts.extend([
+            # Create intelligent summary instead of dumping full content
+            lines = file.content.split('\n') if file.content else []
+            
+            # Extract key information instead of full content
+            summary_info = [
                 f"📄 FILE: {file.path}",
                 f"🎯 Relevance: {file.relevance_score:.2f} | Reasons: {', '.join(file.reasons)}",
                 f"📦 Dependencies: {', '.join(file.dependencies[:5])}" + ("..." if len(file.dependencies) > 5 else ""),
-                "```",
-                file.content,
-                "```",
+                f"📊 Size: {len(file.content)} characters, {len(lines)} lines",
                 ""
-            ])
+            ]
+            
+            # Include key imports and exports (first 15 lines that contain them)
+            key_lines = [line for line in lines[:25] if line.strip() and any(keyword in line for keyword in ['import', 'export', 'const', 'interface', 'type', 'function'])]
+            if key_lines:
+                summary_info.extend([
+                    "🔧 Key Structure:",
+                    "```",
+                    *key_lines[:10],  # Limit to first 10 key lines
+                    "```",
+                    ""
+                ])
+            
+            # Add structural indicators
+            structure_info = []
+            content_lower = file.content.lower() if file.content else ""
+            if 'function' in content_lower or 'const' in content_lower:
+                structure_info.append("React components/functions")
+            if 'interface' in content_lower or 'type' in content_lower:
+                structure_info.append("TypeScript definitions")
+            if 'useState' in file.content or 'useEffect' in file.content:
+                structure_info.append("React hooks")
+            if 'className' in file.content:
+                structure_info.append("Styled components")
+            
+            if structure_info:
+                summary_info.extend([
+                    f"🏗️ Contains: {', '.join(structure_info)}",
+                    ""
+                ])
+            
+            context_parts.extend(summary_info)
         
         if selection.excluded_files:
             context_parts.extend([

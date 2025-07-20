@@ -436,6 +436,32 @@ Focus on delivering exactly what was requested - simple for simple requests, com
             new_tags = re.findall(r'<new filename=\"([^\"]+)\">', content)
             if not new_tags:
                 issues.append("No <new> tags found in response for app creation")
+        elif context == "single_file":
+            # For single file generation, just check that it contains code-like content
+            if not any(keyword in content for keyword in ['import', 'export', 'const', 'function', 'interface', 'type', "'use client'", '"use client"']):
+                issues.append("Response doesn't appear to contain valid code content")
+        elif context == "file_plan":
+            # For file plan generation, expect JSON with files array
+            try:
+                import json
+                # Try to parse as JSON
+                if content.strip().startswith('```json'):
+                    # Extract JSON from markdown code block
+                    json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+                    if json_match:
+                        json_str = json_match.group(1)
+                    else:
+                        json_str = content.strip()
+                else:
+                    json_str = content.strip()
+                
+                data = json.loads(json_str)
+                if 'files' not in data:
+                    issues.append("No 'files' array found in file plan JSON")
+                elif not isinstance(data['files'], list) or len(data['files']) == 0:
+                    issues.append("'files' array is empty or invalid in file plan")
+            except json.JSONDecodeError:
+                issues.append("File plan response is not valid JSON format")
         elif context == "edit_fallback":
             # Legacy fallback now also uses unified diff format
             if '*** Begin Patch' not in content:
@@ -480,6 +506,10 @@ Focus on delivering exactly what was requested - simple for simple requests, com
             good_practices.append("Uses proper unified diff format")
         elif context == "create" and '<new filename=' in content:
             good_practices.append("Uses appropriate file creation tags")
+        elif context == "single_file" and any(keyword in content for keyword in ['import', 'export', 'const', 'function']):
+            good_practices.append("Contains valid code structure")
+        elif context == "file_plan" and '"files"' in content:
+            good_practices.append("Uses structured file plan format")
         elif context == "edit_fallback" and '*** Begin Patch' in content:
             good_practices.append("Uses proper unified diff format (fallback)")
         elif context == "intent" and '"intents"' in content:
@@ -553,24 +583,39 @@ Focus on delivering exactly what was requested - simple for simple requests, com
 
 
     def call_openai(self, messages: List[Dict], config: Dict) -> Optional[str]:
-        """Call OpenAI API."""
+        """Call OpenAI API with real-time streaming."""
         if not self.openai_client:
             return None
         
         try:
-            response = self.openai_client.chat.completions.create(
+            print(f"\n🤖 {config['name']} Response:")
+            
+            # Use streaming API
+            response_stream = self.openai_client.chat.completions.create(
                 model=config["model"],
                 messages=messages,
                 max_tokens=config["max_tokens"],
-                temperature=config["temperature"]
+                temperature=config["temperature"],
+                stream=True  # Enable streaming
             )
-            return response.choices[0].message.content
+            
+            full_response = ""
+            for chunk in response_stream:
+                if chunk.choices[0].delta.content:
+                    content = chunk.choices[0].delta.content
+                    full_response += content
+                    # Stream each token as it arrives
+                    print(content, end="", flush=True)
+            
+            print("\n")
+            return full_response
+            
         except Exception as e:
-            print(f"❌ OpenAI error: {str(e)}")
+            print(f"❌ OpenAI streaming error: {str(e)}")
             return None
 
     def call_anthropic(self, messages: List[Dict], config: Dict) -> Optional[str]:
-        """Call Anthropic API directly."""
+        """Call Anthropic API with real-time streaming."""
         if not self.anthropic_client:
             return None
         
@@ -585,16 +630,27 @@ Focus on delivering exactly what was requested - simple for simple requests, com
                 else:
                     user_messages.append(msg)
             
-            response = self.anthropic_client.messages.create(
+            print(f"\n🤖 {config['name']} Response:")
+            
+            # Use streaming API
+            full_response = ""
+            with self.anthropic_client.messages.stream(
                 model=config["model"],
                 max_tokens=config["max_tokens"],
                 temperature=config["temperature"],
                 system=system_message,
                 messages=user_messages
-            )
-            return response.content[0].text
+            ) as stream:
+                for text in stream.text_stream:
+                    full_response += text
+                    # Stream each token as it arrives
+                    print(text, end="", flush=True)
+            
+            print("\n")
+            return full_response
+            
         except Exception as e:
-            print(f"❌ Anthropic error: {str(e)}")
+            print(f"❌ Anthropic streaming error: {str(e)}")
             return None
 
     def call_openrouter(self, messages: List[Dict], config: Dict) -> Optional[str]:
@@ -630,6 +686,10 @@ Focus on delivering exactly what was requested - simple for simple requests, com
 
     def generate_with_fallback(self, messages: List[Dict], context: str = "create") -> Optional[str]:
         """Generate response with fallback across multiple LLM providers."""
+        # Stop all progress loaders before streaming
+        from .progress_loader import progress_manager
+        progress_manager.cleanup_all()
+        
         print("🚀 Generating NextJS application with multi-LLM fallback...")
         
         for i, config in enumerate(self.llm_providers, 1):
@@ -1645,7 +1705,7 @@ Make minimal, surgical changes with proper context matching.
         try:
             from .request_enhancer import RequestEnhancer
             enhancer = RequestEnhancer()
-            enhanced_request = enhancer.enhance_request(app_idea)
+            enhanced_request = enhancer.enhance_edit_request(app_idea, self.get_app_path())
             print(f"✅ Request enhanced ({len(enhanced_request)} chars)")
         except Exception as e:
             print(f"⚠️ Request enhancement failed: {e}")
@@ -1662,11 +1722,11 @@ Make minimal, surgical changes with proper context matching.
             app_path = self.get_app_path()
             context_files = context_selector.select_context(enhanced_request, app_path)
             
-            print(f"📁 Selected {len(context_files)} context files")
-            print(f"📊 Total context: {sum(len(content) for _, content, _ in context_files)} tokens")
+            print(f"📁 Selected {len(context_files.selected_files)} context files")
+            print(f"📊 Total context: {context_files.total_tokens} tokens")
             
             # Extract just file paths for the enhanced method
-            context_file_paths = [file_path for file_path, _, _ in context_files]
+            context_file_paths = [cf.path for cf in context_files.selected_files]
             
         except Exception as e:
             print(f"⚠️ Context selection failed: {e}")
@@ -1698,7 +1758,7 @@ Make minimal, surgical changes with proper context matching.
     
     def _edit_app_with_diffs(self, app_idea):
         """Edit app using traditional diff-based approach (with sanitization)."""
-        from .diff_builder import DiffBuilder
+        from .diff_builder import AtomicDiffBuilder
         
         print(f"📝 Editing existing app with diff-based approach: {self.app_name}")
         print(f"🎯 Requested changes: {app_idea}")
@@ -1740,8 +1800,9 @@ Make minimal, surgical changes with proper context matching.
         
         # Apply the diff
         print("🔧 Applying unified diff...")
-        diff_builder = DiffBuilder(diff_file, self.get_app_path())
-        success = diff_builder.build()
+        diff_builder = AtomicDiffBuilder(self.get_app_path(), diff_file)
+        results = diff_builder.apply_patch_atomically()
+        success = all(result.success for result in results)
         
         if not success:
             print("❌ Failed to apply diff - attempting recovery...")
@@ -1791,9 +1852,10 @@ Focus on making minimal, surgical changes that are easy to apply."""
             with open(diff_file, 'w') as f:
                 f.write(response)
                 
-            from .diff_builder import DiffBuilder
-            diff_builder = DiffBuilder(diff_file, self.get_app_path())
-            success = diff_builder.build()
+            from .diff_builder import AtomicDiffBuilder
+            diff_builder = AtomicDiffBuilder(self.get_app_path(), diff_file)
+            results = diff_builder.apply_patch_atomically()
+            success = all(result.success for result in results)
             
             if success:
                 print("✅ Recovery diff applied successfully!")
@@ -1999,7 +2061,7 @@ Make minimal, targeted changes to implement the requested features."""
 
     def fix_infrastructure_errors(self, infrastructure_errors: List[str]) -> bool:
         """
-        Fix infrastructure-related errors.
+        Fix infrastructure-related errors using smart build error analysis.
         
         Args:
             infrastructure_errors: List of infrastructure error strings
@@ -2017,17 +2079,65 @@ Make minimal, targeted changes to implement the requested features."""
             original_dir = os.getcwd()
             os.chdir(app_path)
             
-            # Try npm install to fix dependency issues
-            print("🔧 Running npm install to fix dependencies...")
-            result = subprocess.run(['npm', 'install'], 
-                                  capture_output=True, text=True, timeout=120)
+            # Combine all infrastructure errors into one string for analysis
+            error_output = "\n".join(infrastructure_errors)
             
-            if result.returncode == 0:
-                print("✅ npm install completed successfully")
-                return True
-            else:
-                print(f"❌ npm install failed: {result.stderr}")
-                return False
+            # Try smart build error analysis first
+            print("🧠 Using smart build error analysis for infrastructure errors...")
+            try:
+                from .build_error_analyzer import SmartBuildErrorAnalyzer
+                from .smart_task_executor import SmartTaskExecutor
+                
+                # Analyze the errors with full context
+                analyzer = SmartBuildErrorAnalyzer(app_path)
+                analysis = analyzer.analyze_build_error(error_output)
+                
+                print(f"   📋 Analysis: {analysis.error_summary}")
+                print(f"   🎯 Root cause: {analysis.root_cause}")
+                print(f"   📊 Confidence: {analysis.confidence:.1%}")
+                
+                if analysis.confidence > 0.4 and analysis.tasks:
+                    # Execute the fix tasks
+                    executor = SmartTaskExecutor(app_path)
+                    success, task_results = executor.execute_analysis(analysis)
+                    
+                    if success:
+                        print("✅ Smart infrastructure error fix applied successfully!")
+                        return True
+                    else:
+                        print("⚠️ Smart infrastructure error fix partially failed")
+                        print(executor.get_execution_summary())
+                        # Continue with fallback
+                else:
+                    print(f"❌ Low confidence analysis ({analysis.confidence:.1%}), using fallback...")
+                    
+            except Exception as e:
+                print(f"❌ Smart error analysis failed: {e}")
+            
+            # Fallback: Use DependencyManager for comprehensive dependency fixing
+            print("🔧 Fallback: Analyzing and fixing missing dependencies...")
+            try:
+                from .dependency_manager import DependencyManager
+                dependency_manager = DependencyManager(app_path)
+                if dependency_manager.auto_manage_dependencies():
+                    print("✅ Dependencies analyzed and installed successfully")
+                    return True
+                else:
+                    print("⚠️ Dependency management completed with warnings")
+                    return True  # Still consider it successful
+            except Exception as e:
+                print(f"❌ Error with dependency manager: {e}")
+                # Final fallback to basic npm install
+                print("🔧 Final fallback: Basic npm install...")
+                result = subprocess.run(['npm', 'install'], 
+                                      capture_output=True, text=True, timeout=120)
+                
+                if result.returncode == 0:
+                    print("✅ Basic npm install completed successfully")
+                    return True
+                else:
+                    print(f"❌ npm install failed: {result.stderr}")
+                    return False
                 
         except Exception as e:
             print(f"❌ Error fixing infrastructure: {e}")
@@ -2111,9 +2221,10 @@ SPECIFIC FILES WITH ERRORS:
             print(f"💾 Saved fix diff to: {fix_file}")
             
             # Apply the fix diff
-            from .diff_builder import DiffBuilder
-            diff_builder = DiffBuilder(fix_file, self.get_app_path())
-            fix_success = diff_builder.build()
+            from .diff_builder import AtomicDiffBuilder
+            diff_builder = AtomicDiffBuilder(self.get_app_path(), fix_file)
+            results = diff_builder.apply_patch_atomically()
+            fix_success = all(result.success for result in results)
             
             if not fix_success:
                 print(f"❌ Failed to apply fix diff (attempt {attempt + 1})")
@@ -2196,75 +2307,73 @@ Focus on fixing:
         Returns:
             Tuple of (is_valid, response)
         """
-        with llm_progress("AI API"):
-            try:
-                update_current_task("preparing request")
-                messages = [
-                    {"role": "system", "content": self.get_system_prompt()},
-                    {"role": "user", "content": prompt}
-                ]
-                
-                update_current_task("generating AI response")
-                response = self.generate_with_fallback(messages, context=context)
-                if not response:
-                    return False, ""
-                
-                # 🔍 DEBUG: Save and print the raw AI response
-                update_current_task("processing AI response")
-                import os
-                import time
-                
-                # Save to debug file
-                debug_dir = "debug_responses"
-                os.makedirs(debug_dir, exist_ok=True)
-                timestamp = int(time.time())
-                debug_file = f"{debug_dir}/ai_response_{timestamp}.txt"
-                
-                with open(debug_file, 'w', encoding='utf-8') as f:
-                    f.write("=== RAW AI RESPONSE ===\n")
-                    f.write(response)
-                    f.write("\n=== END RESPONSE ===\n")
-                
-                print(f"🔍 DEBUG: Raw AI response saved to {debug_file}")
-                print("🔍 DEBUG: First 500 characters of AI response:")
-                print("-" * 50)
-                print(response[:500])
-                print("-" * 50)
-                if len(response) > 500:
-                    print(f"... (truncated, full response in {debug_file})")
-                
-                # Check for JSX issues in the raw response
-                if 'return (' in response and '}>' in response:
-                    jsx_samples = []
-                    lines = response.split('\n')
-                    for i, line in enumerate(lines):
-                        if 'return (' in line:
-                            # Get this line and next few lines to see the pattern
-                            sample = '\n'.join(lines[i:i+10])
-                            jsx_samples.append(f"Line {i+1}: {sample}")
-                    
-                    if jsx_samples:
-                        print("🚨 POTENTIAL JSX ISSUES DETECTED IN RAW RESPONSE:")
-                        for sample in jsx_samples[:3]:  # Show first 3 samples
-                            print(sample)
-                            print("-" * 30)
-                
-                # Validate the response
-                update_current_task("validating AI response")
-                is_valid, validation_feedback = self.validate_response(response, context=context)
-                
-                if is_valid:
-                    print("✅ Generated valid response")
-                    return True, response
-                else:
-                    print("❌ Response validation failed:")
-                    for feedback in validation_feedback[:3]:  # Limit feedback
-                        print(f"   - {feedback}")
-                    return False, response
-                    
-            except Exception as e:
-                print(f"❌ Error in AI request: {str(e)}")
+        try:
+            print("🎯 Preparing AI request...")
+            messages = [
+                {"role": "system", "content": self.get_system_prompt()},
+                {"role": "user", "content": prompt}
+            ]
+            
+            response = self.generate_with_fallback(messages, context=context)
+            if not response:
                 return False, ""
+            
+            # 🔍 DEBUG: Save and print the raw AI response
+            print("📝 Processing response...")
+            import os
+            import time
+            
+            # Save to debug file
+            debug_dir = "debug_responses"
+            os.makedirs(debug_dir, exist_ok=True)
+            timestamp = int(time.time())
+            debug_file = f"{debug_dir}/ai_response_{timestamp}.txt"
+            
+            with open(debug_file, 'w', encoding='utf-8') as f:
+                f.write("=== RAW AI RESPONSE ===\n")
+                f.write(response)
+                f.write("\n=== END RESPONSE ===\n")
+            
+            print(f"🔍 DEBUG: Raw AI response saved to {debug_file}")
+            print("🔍 DEBUG: First 500 characters of AI response:")
+            print("-" * 50)
+            print(response[:500])
+            print("-" * 50)
+            if len(response) > 500:
+                print(f"... (truncated, full response in {debug_file})")
+            
+            # Check for JSX issues in the raw response
+            if 'return (' in response and '}>' in response:
+                jsx_samples = []
+                lines = response.split('\n')
+                for i, line in enumerate(lines):
+                    if 'return (' in line:
+                        # Get this line and next few lines to see the pattern
+                        sample = '\n'.join(lines[i:i+10])
+                        jsx_samples.append(f"Line {i+1}: {sample}")
+                
+                if jsx_samples:
+                    print("🚨 POTENTIAL JSX ISSUES DETECTED IN RAW RESPONSE:")
+                    for sample in jsx_samples[:3]:  # Show first 3 samples
+                        print(sample)
+                        print("-" * 30)
+            
+            # Validate the response
+            print("✅ Validating response...")
+            is_valid, validation_feedback = self.validate_response(response, context=context)
+            
+            if is_valid:
+                print("✅ Generated valid response")
+                return True, response
+            else:
+                print("❌ Response validation failed:")
+                for feedback in validation_feedback[:3]:  # Limit feedback
+                    print(f"   - {feedback}")
+                return False, response
+                
+        except Exception as e:
+            print(f"❌ Error in AI request: {str(e)}")
+            return False, ""
 
     def extract_error_files_content(self, build_errors: List[str], app_structure: str) -> str:
         """
@@ -2477,20 +2586,10 @@ Requirements:
         import sys
         
         def show_progress_dots(message, duration=1.0):
-            """Show animated progress dots"""
-            end_time = time.time() + duration
-            dot_count = 0
-            
-            while time.time() < end_time:
-                dots = "." * (dot_count % 4)
-                spaces = " " * (3 - len(dots))
-                sys.stdout.write(f"\r{message}{dots}{spaces}")
-                sys.stdout.flush()
-                time.sleep(0.3)
-                dot_count += 1
-            
-            sys.stdout.write(f"\r{message} ✓\n")
-            sys.stdout.flush()
+            """Show simple progress message (no animation to avoid stdout conflicts)"""
+            print(f"{message}...")
+            time.sleep(duration * 0.1)  # Brief pause instead of animation
+            print(f"{message} ✓")
         
         # Prepare context with progress
         show_progress_dots("📋 Preparing context files", 0.8)
@@ -2504,12 +2603,36 @@ Requirements:
                     full_path = self.apps_dir / self.app_name / file_path
                     if full_path.exists():
                         content = full_path.read_text()
-                        context_content += f"\n### {file_path}\n```\n{content}\n```\n"
+                        # Include only file structure and key imports, not full content
+                        lines = content.split('\n')
+                        
+                        # Extract key information instead of full content
+                        summary_lines = []
+                        summary_lines.append(f"File: {file_path}")
+                        
+                        # Include imports (first 10 lines that start with import/export)
+                        import_lines = [line for line in lines[:20] if line.strip().startswith(('import', 'export', 'const', 'interface', 'type'))]
+                        if import_lines:
+                            summary_lines.extend(import_lines[:5])
+                        
+                        # Include key structural info
+                        if 'function' in content or 'const' in content:
+                            summary_lines.append("Contains: React components/functions")
+                        if 'interface' in content or 'type' in content:
+                            summary_lines.append("Contains: TypeScript definitions")
+                        
+                        summary_lines.append(f"Size: {len(content)} characters")
+                        summary_lines.append("---")
+                        
+                        context_content += f"\n### {file_path}\n" + '\n'.join(summary_lines) + "\n"
                 except Exception as e:
                     print(f"   ⚠️ Could not read {file_path}: {e}")
         
         # Prepare the enhanced prompt
         show_progress_dots("📝 Preparing AI prompt", 0.5)
+        
+        # Import the intent-based prompt function
+        from .intent_editor import get_intent_based_prompt
         
         enhanced_prompt = f"""
 {get_intent_based_prompt()}
@@ -2538,23 +2661,8 @@ Focus on creating the missing pages and functionality as requested.
                 # Show generation progress
                 print("🧠 Generating response...")
                 
-                # Animate thinking indicator
-                thinking_chars = ["🤔", "💭", "🧠", "⚡"]
-                start_time = time.time()
-                char_index = 0
-                
-                # Start the actual API call in a separate thread if possible
-                # For now, we'll just show the animation for a bit then make the call
-                for _ in range(8):  # Show animation for ~2.4 seconds
-                    char = thinking_chars[char_index % len(thinking_chars)]
-                    sys.stdout.write(f"\r{char} AI processing your request...")
-                    sys.stdout.flush()
-                    time.sleep(0.3)
-                    char_index += 1
-                
-                # Now make the actual call
-                sys.stdout.write(f"\r⚡ AI processing your request...\n")
-                sys.stdout.flush()
+                # Simple thinking indicator (no animation to avoid stdout conflicts)
+                print("🧠 AI processing your request...")
                 
                 # Call LLM based on provider type
                 messages = [
@@ -2630,6 +2738,1008 @@ Focus on creating the missing pages and functionality as requested.
         
         print("\n💥 All LLM providers failed to generate usable intents")
         return None
+
+    def generate_single_file(self, file_path: str, file_description: str, context: str = "") -> Optional[str]:
+        """
+        Generate a single file using AI - more reliable than multi-file generation.
+        
+        Args:
+            file_path: Path of the file to generate (e.g., "app/page.tsx")
+            file_description: Description of what this file should contain
+            context: Additional context about the app and related files
+            
+        Returns:
+            Generated file content or None if failed
+        """
+        print(f"🎯 Generating single file: {file_path}")
+        
+        # Determine file type and create appropriate prompt
+        file_type = self._get_file_type(file_path)
+        
+        single_file_prompt = f"""You are creating a single file for a NextJS application.
+
+FILE TO CREATE: {file_path}
+FILE DESCRIPTION: {file_description}
+
+CONTEXT:
+{context}
+
+REQUIREMENTS:
+1. Generate ONLY the content for {file_path}
+2. Make it complete and functional
+3. Follow NextJS 13+ App Router patterns
+4. Use TypeScript with proper types
+5. Use shadcn/ui components where appropriate
+6. Include proper imports and exports
+
+FILE TYPE GUIDELINES:
+{self._get_file_type_guidelines(file_type)}
+
+Return ONLY the file content - no explanations, no tags, just the raw code that should go in {file_path}.
+"""
+
+        try:
+            messages = [
+                {"role": "system", "content": self.get_single_file_system_prompt()},
+                {"role": "user", "content": single_file_prompt}
+            ]
+            
+            response = self.generate_with_fallback(messages, context="single_file")
+            
+            if response:
+                # Clean the response - remove any markdown code blocks or explanations
+                cleaned_content = self._clean_single_file_response(response)
+                print(f"✅ Generated {file_path} ({len(cleaned_content)} characters)")
+                return cleaned_content
+            else:
+                print(f"❌ Failed to generate {file_path}")
+                return None
+                
+        except Exception as e:
+            print(f"❌ Error generating {file_path}: {str(e)}")
+            return None
+
+    def _get_file_type(self, file_path: str) -> str:
+        """Determine the type of file based on its path."""
+        if file_path.endswith('.tsx'):
+            if 'page.tsx' in file_path:
+                return 'page'
+            elif 'layout.tsx' in file_path:
+                return 'layout'
+            elif file_path.startswith('components/'):
+                return 'component'
+            else:
+                return 'tsx'
+        elif file_path.endswith('.ts'):
+            if file_path.startswith('types/'):
+                return 'types'
+            elif file_path.startswith('lib/') or file_path.startswith('utils/'):
+                return 'utility'
+            elif file_path.startswith('data/'):
+                return 'data'
+            else:
+                return 'ts'
+        else:
+            return 'other'
+
+    def _get_file_type_guidelines(self, file_type: str) -> str:
+        """Get specific guidelines for different file types."""
+        guidelines = {
+            'page': """
+- Use 'use client' directive for interactive pages
+- Export default function component
+- Implement proper loading and error states
+- Use shadcn/ui components for UI elements
+- Include proper TypeScript types for props""",
+            
+            'component': """
+- Use 'use client' directive if component has state/interactivity
+- Export default function component
+- Define proper TypeScript interfaces for props
+- Use shadcn/ui components for consistency
+- Include proper accessibility attributes""",
+            
+            'types': """
+- Export all interfaces and types
+- Use proper TypeScript conventions
+- Include JSDoc comments for complex types
+- Consider making types generic where appropriate""",
+            
+            'utility': """
+- Export individual functions
+- Include proper TypeScript types
+- Add JSDoc comments for public functions
+- Handle edge cases and errors gracefully""",
+            
+            'data': """
+- Export const data arrays/objects
+- Use proper TypeScript types
+- Include realistic, diverse mock data
+- Consider data relationships and consistency"""
+        }
+        
+        return guidelines.get(file_type, "Follow NextJS and TypeScript best practices.")
+
+    def _clean_single_file_response(self, response: str) -> str:
+        """Clean AI response to extract just the file content."""
+        # Remove markdown code blocks
+        if '```' in response:
+            # Find the largest code block
+            import re
+            code_blocks = re.findall(r'```(?:\w+)?\n(.*?)```', response, re.DOTALL)
+            if code_blocks:
+                # Return the largest code block (most likely the actual content)
+                return max(code_blocks, key=len).strip()
+        
+        # If no code blocks, return the response as-is (cleaned)
+        lines = response.split('\n')
+        
+        # Skip any explanatory text at the beginning
+        start_index = 0
+        for i, line in enumerate(lines):
+            if any(keyword in line.lower() for keyword in ['import', 'export', 'const', 'function', 'interface', 'type', "'use client'"]):
+                start_index = i
+                break
+        
+        return '\n'.join(lines[start_index:]).strip()
+
+    def generate_app_by_files(self, app_idea: str, file_plan: List[Dict[str, str]]) -> bool:
+        """
+        Generate an app by creating files one at a time.
+        
+        Args:
+            app_idea: The original app idea
+            file_plan: List of dicts with 'path', 'description', and 'dependencies'
+            
+        Returns:
+            True if all files were generated successfully
+        """
+        print(f"📁 Generating app with {len(file_plan)} files...")
+        
+        generated_files = {}
+        failed_files = []
+        
+        # Sort files by dependencies (independent files first)
+        sorted_files = self._sort_files_by_dependencies(file_plan)
+        
+        for i, file_info in enumerate(sorted_files, 1):
+            file_path = file_info['path']
+            description = file_info['description']
+            
+            print(f"\n[{i}/{len(sorted_files)}] Creating {file_path}...")
+            
+            # Build context from previously generated files
+            context = self._build_context_for_file(file_info, generated_files, app_idea)
+            
+            # Generate the file
+            content = self.generate_single_file(file_path, description, context)
+            
+            if content:
+                generated_files[file_path] = content
+                print(f"✅ Generated {file_path}")
+            else:
+                failed_files.append(file_path)
+                print(f"❌ Failed to generate {file_path}")
+        
+        if failed_files:
+            print(f"\n⚠️ Failed to generate {len(failed_files)} files:")
+            for file_path in failed_files:
+                print(f"   ❌ {file_path}")
+            return False
+        
+        # Write all files to disk
+        return self._write_generated_files(generated_files)
+
+    def _sort_files_by_dependencies(self, file_plan: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """Sort files so dependencies are created before dependents."""
+        # Simple heuristic: types first, then data, then utils, then components, then pages
+        priority_order = {
+            'types/': 0,
+            'data/': 1,
+            'lib/': 2,
+            'utils/': 2,
+            'components/': 3,
+            'app/': 4
+        }
+        
+        def get_priority(file_info):
+            path = file_info['path']
+            for prefix, priority in priority_order.items():
+                if path.startswith(prefix):
+                    return priority
+            return 5  # Default priority
+        
+        return sorted(file_plan, key=get_priority)
+
+    def _build_context_for_file(self, file_info: Dict[str, str], generated_files: Dict[str, str], app_idea: str) -> str:
+        """Build context for generating a specific file."""
+        context = f"APP IDEA: {app_idea}\n\n"
+        
+        # Add relevant already-generated files as context
+        dependencies = file_info.get('dependencies', [])
+        
+        for dep in dependencies:
+            if dep in generated_files:
+                context += f"=== {dep} ===\n{generated_files[dep]}\n\n"
+        
+        # Add any type definitions that might be relevant
+        for file_path, content in generated_files.items():
+            if file_path.startswith('types/') and file_path != file_info['path']:
+                context += f"=== {file_path} ===\n{content}\n\n"
+        
+        return context
+
+    def _write_generated_files(self, generated_files: Dict[str, str]) -> bool:
+        """
+        Write generated files to disk.
+        
+        Args:
+            generated_files: Dict mapping file paths to their content
+            
+        Returns:
+            True if all files were written successfully
+        """
+        print(f"\n📝 Writing {len(generated_files)} files to disk...")
+        
+        app_path = Path(self.get_app_path())
+        failed_files = []
+        
+        for file_path, content in generated_files.items():
+            try:
+                target_file = app_path / file_path
+                
+                # Create parent directories if they don't exist
+                target_file.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Write the file
+                target_file.write_text(content)
+                
+                print(f"✅ Written: {file_path}")
+                
+            except Exception as e:
+                print(f"❌ Failed to write {file_path}: {str(e)}")
+                failed_files.append(file_path)
+        
+        if failed_files:
+            print(f"\n⚠️ Failed to write {len(failed_files)} files:")
+            for file_path in failed_files:
+                print(f"   ❌ {file_path}")
+            return False
+        
+        print(f"\n✅ All {len(generated_files)} files written successfully!")
+        return True
+
+    def generate_file_plan(self, app_idea: str) -> List[Dict[str, str]]:
+        """
+        Generate a plan of files to create for an app idea.
+        
+        Args:
+            app_idea: The app idea description
+            
+        Returns:
+            List of file plans with path, description, and dependencies
+        """
+        print("📋 Generating file plan...")
+        
+        planning_prompt = f"""Create a file plan for a NextJS application based on this idea:
+
+APP IDEA: {app_idea}
+
+Analyze the app idea and create a detailed plan of files that need to be created. Consider:
+1. What type of app this is (simple utility, complex multi-page, etc.)
+2. What components and pages are needed
+3. What data structures and types are required
+4. What utilities and hooks might be needed
+
+Return a JSON array of file plans in this exact format:
+
+{{
+  "files": [
+    {{
+      "path": "types/talent.ts",
+      "description": "TypeScript interfaces for talent profiles and user interactions",
+      "dependencies": [],
+      "priority": 1
+    }},
+    {{
+      "path": "data/mockTalents.ts", 
+      "description": "Mock data array with diverse talent profiles for the app",
+      "dependencies": ["types/talent.ts"],
+      "priority": 2
+    }},
+    {{
+      "path": "lib/hooks.ts",
+      "description": "Custom React hooks for localStorage and talent browsing state management", 
+      "dependencies": ["types/talent.ts"],
+      "priority": 2
+    }},
+    {{
+      "path": "components/TalentCard.tsx",
+      "description": "Interactive card component for displaying talent profiles with like/dislike buttons",
+      "dependencies": ["types/talent.ts"],
+      "priority": 3
+    }},
+    {{
+      "path": "app/page.tsx",
+      "description": "Main application page integrating all components for the talent discovery app",
+      "dependencies": ["components/TalentCard.tsx", "lib/hooks.ts", "data/mockTalents.ts"],
+      "priority": 4
+    }}
+  ]
+}}
+
+GUIDELINES:
+- Start with types and interfaces (priority 1)
+- Then data and utilities (priority 2) 
+- Then components (priority 3)
+- Finally pages that use everything (priority 4)
+- Include realistic descriptions of what each file should contain
+- List dependencies accurately
+- For simple apps, keep it minimal (3-5 files)
+- For complex apps, include more components and pages
+- Always include app/page.tsx as the main page
+"""
+
+        try:
+            messages = [
+                {"role": "system", "content": "You are an expert NextJS architect. Always return valid JSON."},
+                {"role": "user", "content": planning_prompt}
+            ]
+            
+            response = self.generate_with_fallback(messages, context="file_plan")
+            
+            if response:
+                # Parse the JSON response
+                file_plan = self._parse_file_plan_response(response)
+                print(f"✅ Generated plan for {len(file_plan)} files")
+                return file_plan
+            else:
+                print("❌ Failed to generate file plan")
+                return self._get_fallback_file_plan(app_idea)
+                
+        except Exception as e:
+            print(f"❌ Error generating file plan: {str(e)}")
+            return self._get_fallback_file_plan(app_idea)
+
+    def _parse_file_plan_response(self, response: str) -> List[Dict[str, str]]:
+        """Parse AI response for file plan."""
+        try:
+            import json
+            import re
+            
+            # Find JSON in the response
+            json_start = response.find('{')
+            json_end = response.rfind('}') + 1
+            
+            if json_start >= 0 and json_end > json_start:
+                json_str = response[json_start:json_end]
+                data = json.loads(json_str)
+                
+                if 'files' in data:
+                    return data['files']
+                    
+        except Exception as e:
+            print(f"⚠️ Could not parse file plan response: {e}")
+        
+        return []
+
+    def _get_fallback_file_plan(self, app_idea: str) -> List[Dict[str, str]]:
+        """Get a fallback file plan if AI generation fails."""
+        print("🔄 Using fallback file plan...")
+        
+        # Determine app type and provide appropriate fallback
+        app_lower = app_idea.lower()
+        
+        if any(word in app_lower for word in ['tinder', 'swipe', 'card', 'profile']):
+            # Talent/dating app style
+            return [
+                {
+                    "path": "types/profile.ts",
+                    "description": "TypeScript interfaces for user profiles and interactions",
+                    "dependencies": [],
+                    "priority": 1
+                },
+                {
+                    "path": "data/mockData.ts",
+                    "description": "Mock data for profiles",
+                    "dependencies": ["types/profile.ts"],
+                    "priority": 2
+                },
+                {
+                    "path": "lib/hooks.ts",
+                    "description": "Custom hooks for state management",
+                    "dependencies": ["types/profile.ts"],
+                    "priority": 2
+                },
+                {
+                    "path": "components/ProfileCard.tsx",
+                    "description": "Card component for displaying profiles",
+                    "dependencies": ["types/profile.ts"],
+                    "priority": 3
+                },
+                {
+                    "path": "app/page.tsx",
+                    "description": "Main application page",
+                    "dependencies": ["components/ProfileCard.tsx", "lib/hooks.ts", "data/mockData.ts"],
+                    "priority": 4
+                }
+            ]
+        else:
+            # Generic app fallback
+            return [
+                {
+                    "path": "types/index.ts",
+                    "description": "TypeScript interfaces and types",
+                    "dependencies": [],
+                    "priority": 1
+                },
+                {
+                    "path": "app/page.tsx",
+                    "description": "Main application page",
+                    "dependencies": ["types/index.ts"],
+                    "priority": 4
+                }
+            ]
+
+    def generate_app_with_single_files(self, app_idea: str) -> Optional[str]:
+        """
+        Generate an app using the improved single-file approach with proper planning and context.
+        
+        This method:
+        1. Enhances the initial request for better context
+        2. Creates a smart, focused file plan (1 API call)
+        3. Generates files one by one with context from previous files
+        4. Keeps file count reasonable (5-8 files max)
+        5. Ensures proper dependency order
+        """
+        print("🚀 Generating app using improved single-file approach...")
+        print("   ✨ Step 0: Enhanced request processing")
+        print("   🧠 Step 1: Smart planning with focused file list")
+        print("   🔗 Step 2: Context-aware file generation")
+        print("   📦 Step 3: Proper dependency ordering")
+        
+        # Step 0: Enhance the request for better context
+        print("\n✨ Enhancing app idea with additional context...")
+        try:
+            from .request_enhancer import RequestEnhancer
+            request_enhancer = RequestEnhancer()
+            
+            enhanced_request = request_enhancer.enhance_app_idea(app_idea)
+            
+            if enhanced_request and enhanced_request != app_idea:
+                print(f"✅ App idea enhanced with technical specifications")
+                print(f"   📝 Original: {app_idea[:80]}...")
+                print(f"   🎯 Enhanced: {enhanced_request[:100]}...")
+                app_idea = enhanced_request
+            else:
+                print("ℹ️ App idea enhancement not needed")
+                
+        except Exception as e:
+            print(f"⚠️ App idea enhancement failed: {str(e)}")
+            print("   Continuing with original app idea...")
+        
+        # Step 1: Generate a FOCUSED file plan (1 API call)
+        print("\n📋 Creating focused file plan...")
+        file_plan = self.generate_focused_file_plan(app_idea)
+        
+        if not file_plan:
+            print("❌ Could not create file plan")
+            return None
+        
+        # Limit to reasonable number of files
+        if len(file_plan) > 8:
+            print(f"⚠️ Reducing file count from {len(file_plan)} to 8 most essential files")
+            file_plan = file_plan[:8]
+        
+        print(f"📋 Focused plan created with {len(file_plan)} essential files:")
+        for i, file_info in enumerate(file_plan, 1):
+            print(f"   {i}. 📄 {file_info['path']} - {file_info['description'][:60]}...")
+        
+        # Step 2: Generate files with proper context
+        print(f"\n🎯 Generating {len(file_plan)} files with context...")
+        success = self.generate_files_with_context(app_idea, file_plan)
+        
+        if success:
+            print("✅ All files generated successfully!")
+            return "SUCCESS"
+        else:
+            print("❌ Some files failed to generate")
+            return None
+
+    def generate_focused_file_plan(self, app_idea: str) -> List[Dict[str, str]]:
+        """
+        Generate a focused file plan that prioritizes essential files only.
+        
+        This creates a minimal, working app with just the essential files.
+        """
+        print("📋 Generating focused file plan...")
+        
+        focused_planning_prompt = f"""Create a MINIMAL file plan for a working NextJS app based on this idea:
+
+APP IDEA: {app_idea}
+
+CRITICAL REQUIREMENTS:
+1. Keep it to 5-8 files maximum for efficiency
+2. Focus on essential files only to create a working app
+3. Start with types, then 1-2 key components, then main page
+4. No complex features - just core functionality
+5. Use shadcn/ui components
+
+Return a JSON array with this EXACT format:
+
+{{
+  "files": [
+    {{
+      "path": "types/index.ts",
+      "description": "Essential TypeScript interfaces for the app",
+      "dependencies": [],
+      "priority": 1
+    }},
+    {{
+      "path": "components/MainComponent.tsx", 
+      "description": "Primary component that handles core app functionality",
+      "dependencies": ["types/index.ts"],
+      "priority": 2
+    }},
+    {{
+      "path": "app/page.tsx",
+      "description": "Main page that integrates the components",
+      "dependencies": ["components/MainComponent.tsx"],
+      "priority": 3
+    }}
+  ]
+}}
+
+Focus on the MINIMUM viable files to create a working app. Quality over quantity."""
+
+        try:
+            messages = [
+                {"role": "system", "content": "You are an expert NextJS architect. Always return focused, minimal JSON plans."},
+                {"role": "user", "content": focused_planning_prompt}
+            ]
+            
+            response = self.generate_with_fallback(messages, context="file_plan")
+            
+            if response:
+                file_plan = self._parse_file_plan_response(response)
+                print(f"✅ Generated focused plan for {len(file_plan)} files")
+                return file_plan
+            else:
+                print("❌ Failed to generate focused file plan")
+                return self._get_minimal_fallback_plan(app_idea)
+                
+        except Exception as e:
+            print(f"❌ Error generating focused file plan: {str(e)}")
+            return self._get_minimal_fallback_plan(app_idea)
+
+    def generate_files_with_context(self, app_idea: str, file_plan: List[Dict[str, str]]) -> bool:
+        """
+        Generate files one by one with proper context from previously generated files.
+        
+        This ensures each file has context from dependencies and follows proper patterns.
+        """
+        print(f"📁 Generating {len(file_plan)} files with context...")
+        
+        generated_files = {}
+        context_history = f"APP IDEA: {app_idea}\n\n"
+        
+        # Sort files by priority/dependencies
+        sorted_files = sorted(file_plan, key=lambda x: x.get('priority', 99))
+        
+        for i, file_info in enumerate(sorted_files, 1):
+            file_path = file_info['path']
+            description = file_info['description']
+            
+            print(f"\n[{i}/{len(sorted_files)}] 🎯 Generating {file_path}...")
+            
+            # Build rich context from previous files
+            rich_context = self._build_rich_context_for_file(
+                file_info, generated_files, context_history, app_idea
+            )
+            
+            # Generate the file with context
+            content = self.generate_single_file_with_rich_context(
+                file_path, description, rich_context
+            )
+            
+            if content:
+                generated_files[file_path] = content
+                # Add this file to context for next files
+                context_history += f"\n=== {file_path} ===\n{content[:500]}...\n"
+                print(f"✅ Generated {file_path} ({len(content)} chars)")
+            else:
+                print(f"❌ Failed to generate {file_path}")
+                return False
+        
+        # Write all files to disk
+        print(f"\n📝 Writing {len(generated_files)} files to disk...")
+        return self._write_generated_files(generated_files)
+
+    def _build_rich_context_for_file(self, file_info: Dict[str, str], generated_files: Dict[str, str], 
+                                   context_history: str, app_idea: str) -> str:
+        """Build rich context for generating a specific file."""
+        
+        context = f"""RICH CONTEXT FOR FILE GENERATION
+
+APP IDEA: {app_idea}
+
+FILE TO GENERATE: {file_info['path']}
+DESCRIPTION: {file_info['description']}
+
+PREVIOUSLY GENERATED FILES:
+{context_history}
+
+DEPENDENCIES: {', '.join(file_info.get('dependencies', []))}
+
+INTEGRATION REQUIREMENTS:
+- This file should work seamlessly with the previously generated files
+- Follow the same patterns and coding style established
+- Use proper imports from the generated dependencies
+- Maintain consistency with the overall app architecture"""
+
+        return context
+
+    def generate_single_file_with_rich_context(self, file_path: str, description: str, rich_context: str) -> Optional[str]:
+        """Generate a single file with rich context from previously generated files."""
+        
+        file_type = self._get_file_type(file_path)
+        
+        contextual_prompt = f"""You are generating a specific file for a NextJS application with full context.
+
+{rich_context}
+
+SPECIFIC TASK:
+Generate the content for: {file_path}
+
+REQUIREMENTS:
+1. Generate ONLY the raw file content (no explanations, no markdown)
+2. Use the context from previously generated files to ensure consistency
+3. Follow established patterns and imports from the context
+4. Make it complete and functional
+5. Use proper TypeScript and NextJS patterns
+
+FILE TYPE GUIDELINES:
+{self._get_file_type_guidelines(file_type)}
+
+Return ONLY the file content that should go in {file_path}."""
+
+        try:
+            messages = [
+                {"role": "system", "content": self.get_single_file_system_prompt()},
+                {"role": "user", "content": contextual_prompt}
+            ]
+            
+            response = self.generate_with_fallback(messages, context="single_file")
+            
+            if response:
+                cleaned_content = self._clean_single_file_response(response)
+                return cleaned_content
+            else:
+                return None
+                
+        except Exception as e:
+            print(f"❌ Error generating {file_path}: {str(e)}")
+            return None
+
+    def _get_minimal_fallback_plan(self, app_idea: str) -> List[Dict[str, str]]:
+        """Fallback plan with minimal essential files."""
+        return [
+            {
+                "path": "types/index.ts",
+                "description": "Essential TypeScript interfaces",
+                "dependencies": [],
+                "priority": 1
+            },
+            {
+                "path": "components/MainComponent.tsx",
+                "description": "Primary component for the app",
+                "dependencies": ["types/index.ts"],
+                "priority": 2
+            },
+            {
+                "path": "app/page.tsx",
+                "description": "Main page that uses the component",
+                "dependencies": ["components/MainComponent.tsx"],
+                "priority": 3
+            }
+        ]
+
+    def get_single_file_system_prompt(self):
+        """Get system prompt specifically for single-file generation (no <new> tags)."""
+        return """You are an expert NextJS frontend developer creating individual files for a NextJS application.
+
+🚨 CRITICAL JSX SYNTAX RULES 🚨
+
+1. **RETURN STATEMENT SYNTAX**: ALWAYS end JSX return statements with closing parenthesis `)`, NEVER with curly brace `}`
+   
+   ✅ CORRECT JSX RETURN:
+   ```javascript
+   return (
+     <div className="container">
+       <h1>Title</h1>
+       <p>Content</p>
+     </div>
+   )  // ← ENDS WITH CLOSING PARENTHESIS
+   ```
+   
+   ❌ WRONG JSX RETURN:
+   ```javascript
+   return (
+     <div className="container">
+       <h1>Title</h1>
+     </div>
+   }  // ← WRONG! NEVER USE CURLY BRACE TO END RETURN
+   ```
+
+2. **FRONTEND-ONLY FOCUS**: 
+   - NO authentication systems (no NextAuth, no login/logout)
+   - NO database connections (no Prisma, no MongoDB, no SQL)
+   - NO backend API routes (no pages/api/ unless absolutely necessary)
+   - NO server-side functionality beyond static generation
+   - Use React state, localStorage, or sessionStorage for data management
+   - Focus on rich UI/UX and interactive frontend features
+
+3. **STYLING**: Use shadcn/ui components with Tailwind CSS:
+   ✅ CORRECT: Import and use shadcn components: `import { Button } from "@/components/ui/button"`
+   ✅ CORRECT: Use shadcn semantic variants: `<Button variant="outline" size="lg">Click me</Button>`
+   ✅ CORRECT: Combine with Tailwind: `<Button className="w-full mt-4">Submit</Button>`
+
+4. **OUTPUT FORMAT**: Return ONLY the raw file content - no explanations, no markdown code blocks, no <new> tags, just the actual code that should go in the file.
+
+🎯 **GOAL**: Create a single, complete, functional file that integrates well with a NextJS application."""
+
+    def generate_app_with_anti_truncation(self, app_idea: str) -> Optional[str]:
+        """
+        Generate app using anti-truncation strategy - shorter, focused prompt to prevent cutoffs.
+        
+        This approach uses the original single-call method but with a much shorter,
+        more focused prompt to prevent AI response truncation.
+        """
+        print("🎯 Using anti-truncation single-call approach...")
+        
+        # Create a much shorter, focused prompt
+        focused_prompt = f"""Create a NextJS app for: {app_idea}
+
+REQUIREMENTS:
+- Use <new filename="path/file.ext"> syntax
+- Start with essential files only: types, 1-2 components, main page
+- Keep responses under 300 lines total
+- Use shadcn/ui components
+- TypeScript + Tailwind CSS
+- No auth, no backend, frontend-only
+
+Generate ONLY the essential files to make a working app. Keep it minimal and focused."""
+
+        try:
+            messages = [
+                {"role": "system", "content": self.get_focused_system_prompt()},
+                {"role": "user", "content": focused_prompt}
+            ]
+            
+            return self.generate_with_fallback(messages, context="create")
+            
+        except Exception as e:
+            print(f"❌ Error in anti-truncation generation: {str(e)}")
+            return None
+
+    def get_focused_system_prompt(self):
+        """Shorter system prompt to prevent truncation."""
+        return """You are a NextJS developer. Create minimal, working apps using <new filename=""> syntax.
+
+KEY RULES:
+1. KEEP RESPONSES SHORT (under 300 lines total)
+2. Create only essential files: 1-2 types, 1-2 components, main page
+3. Use shadcn/ui: Button, Card, Input
+4. Frontend-only, no auth, no backend
+5. Working code that builds successfully
+
+SYNTAX:
+<new filename="types/index.ts">
+// content here  
+</new>
+
+Focus on minimal viable functionality."""
+
+    def build_and_fix_errors(self, auto_install_deps: bool = True, max_retries: int = 8) -> bool:
+        """
+        Build the app and automatically fix any errors found.
+        
+        Args:
+            auto_install_deps: Whether to automatically install dependencies
+            max_retries: Maximum number of fix attempts
+            
+        Returns:
+            True if build succeeds or errors are fixed, False otherwise
+        """
+        print("🔨 Building and validating NextJS app...")
+        
+        try:
+            import subprocess
+            import re
+            app_path = self.get_app_path()
+            
+            previous_errors = None
+            consecutive_same_errors = 0
+            
+            for attempt in range(max_retries):
+                # Try a build
+                print(f"   📦 Running npm run build (attempt {attempt + 1}/{max_retries})...")
+                result = subprocess.run(
+                    ["npm", "run", "build"], 
+                    cwd=app_path, 
+                    capture_output=True, 
+                    text=True,
+                    timeout=120
+                )
+                
+                if result.returncode == 0:
+                    print("✅ Build successful!")
+                    return True
+                
+                current_errors = result.stderr
+                print("⚠️ Build failed, attempting to fix errors...")
+                print(f"   📝 Build errors: {current_errors[:500]}...")
+                
+                # Check if we're making progress (different errors)
+                if previous_errors and current_errors == previous_errors:
+                    consecutive_same_errors += 1
+                    print(f"   ⚠️ Same errors as previous attempt ({consecutive_same_errors}/3)")
+                    if consecutive_same_errors >= 3:
+                        print("   🛑 No progress after 3 attempts with same errors")
+                        print("   🔍 Need more sophisticated debugging approach")
+                        break
+                else:
+                    consecutive_same_errors = 0  # Reset counter
+                    if previous_errors:
+                        print("   ✅ Different errors detected - making progress")
+                
+                previous_errors = current_errors
+                
+                # Check for shadcn UI component issues
+                missing_ui_components = self._extract_missing_shadcn_components(result.stderr)
+                if missing_ui_components:
+                    print(f"   🎨 Installing missing shadcn components: {', '.join(missing_ui_components)}")
+                    shadcn_result = subprocess.run(
+                        ["npx", "shadcn@latest", "add"] + missing_ui_components + ["--yes"], 
+                        cwd=app_path, 
+                        capture_output=True, 
+                        text=True
+                    )
+                    if shadcn_result.returncode == 0:
+                        print("✅ Shadcn components installed successfully!")
+                        continue  # Retry build
+                    else:
+                        print(f"❌ Failed to install shadcn components: {shadcn_result.stderr}")
+                
+                # Use smart build error analyzer for all build errors
+                print("   🧠 Using smart build error analysis...")
+                try:
+                    from .build_error_analyzer import SmartBuildErrorAnalyzer
+                    from .smart_task_executor import SmartTaskExecutor
+                    
+                    # Analyze the error with full context
+                    analyzer = SmartBuildErrorAnalyzer(app_path)
+                    analysis = analyzer.analyze_build_error(result.stderr)
+                    
+                    print(f"   📋 Analysis: {analysis.error_summary}")
+                    print(f"   🎯 Root cause: {analysis.root_cause}")
+                    print(f"   📊 Confidence: {analysis.confidence:.1%}")
+                    
+                    if analysis.confidence > 0.4 and analysis.tasks:
+                        # Execute the fix tasks
+                        executor = SmartTaskExecutor(app_path)
+                        success, task_results = executor.execute_analysis(analysis)
+                        
+                        if success:
+                            print("✅ Smart build error fix applied and validated successfully!")
+                            continue  # Retry build
+                        else:
+                            print("❌ Smart build error fix failed or didn't resolve the errors")
+                            execution_summary = executor.get_execution_summary()
+                            print(executor.get_execution_summary_text())
+                            
+                            # Check if this is an executor bug vs a real build error
+                            failed_tasks = execution_summary.get('failed_tasks', [])
+                            executor_bugs = []
+                            
+                            for task_info in failed_tasks:
+                                error_msg = task_info.get('error', '').lower()
+                                if any(bug_indicator in error_msg for bug_indicator in [
+                                    'is not defined', 'import error', 'module not found', 
+                                    'name error', 'attribute error'
+                                ]):
+                                    executor_bugs.append(task_info)
+                            
+                            if executor_bugs:
+                                print("🐛 Detected executor bugs that need fixing:")
+                                for bug in executor_bugs:
+                                    print(f"   • {bug.get('task_id', 'unknown')}: {bug.get('error', 'unknown error')}")
+                                print("🔧 System needs debugging before continuing with build fixes")
+                                print("❌ Stopping build attempts until executor issues are resolved")
+                                return False
+                            else:
+                                # Real build errors, continue with partial fixes
+                                print("🔄 Continuing with partial fixes in case they help...")
+                                continue
+                    else:
+                        print(f"❌ Low confidence analysis ({analysis.confidence:.1%}), trying fallback...")
+                        
+                except Exception as e:
+                    print(f"❌ Smart error analysis failed: {e}")
+                
+                # Fallback: Check for specific dependency issues
+                if "Cannot resolve module" in result.stderr or "Module not found" in result.stderr:
+                    print("   🔧 Fallback: Attempting basic dependency fix...")
+                    if auto_install_deps:
+                        try:
+                            from .dependency_manager import DependencyManager
+                            dependency_manager = DependencyManager(app_path)
+                            if dependency_manager.auto_manage_dependencies():
+                                print("✅ Dependencies analyzed and installed successfully!")
+                                continue  # Retry build
+                            else:
+                                print("⚠️ Dependency management completed with warnings")
+                                continue  # Still retry build
+                        except Exception as e:
+                            print(f"❌ Error running dependency management: {e}")
+                            # Fallback to basic npm install
+                            dep_result = subprocess.run(
+                                ["npm", "install"], 
+                                cwd=app_path, 
+                                capture_output=True, 
+                                text=True
+                            )
+                            if dep_result.returncode == 0:
+                                print("✅ Basic npm install completed!")
+                                continue  # Retry build
+                
+                # If we get here, we couldn't fix the issue
+                break
+            
+            # Provide detailed feedback based on what happened
+            if consecutive_same_errors >= 3:
+                print("❌ Build validation failed: Same errors persisting despite multiple fix attempts")
+                print("💡 Suggestions:")
+                print("   • The smart fixes may not be targeting the right issues")
+                print("   • Manual code review may be needed")
+                print("   • Check if the error messages point to specific files/lines")
+            else:
+                print(f"❌ Build validation failed after {max_retries} retry attempts")
+                print("💡 The system tried multiple smart fixes but couldn't resolve all issues")
+            
+            # Show final error state for debugging
+            if previous_errors:
+                print("\n📋 Final error state:")
+                print(f"   {previous_errors[:300]}{'...' if len(previous_errors) > 300 else ''}")
+            
+            return False
+                
+        except subprocess.TimeoutExpired:
+            print("⚠️ Build timeout - skipping validation")
+            return False
+        except Exception as e:
+            print(f"⚠️ Build validation error: {str(e)}")
+            return False
+
+    def _extract_missing_shadcn_components(self, error_output: str) -> List[str]:
+        """Extract missing shadcn UI component names from build error output."""
+        import re
+        
+        # Look for patterns like "Can't resolve '@/components/ui/checkbox'"
+        pattern = r"Can't resolve '@/components/ui/(\w+)'"
+        matches = re.findall(pattern, error_output)
+        
+        # Filter to known shadcn components
+        known_components = {
+            'button', 'input', 'card', 'checkbox', 'badge', 'textarea', 'select',
+            'dialog', 'dropdown-menu', 'popover', 'tooltip', 'alert', 'progress',
+            'tabs', 'accordion', 'avatar', 'calendar', 'command', 'form', 'label',
+            'menubar', 'navigation-menu', 'radio-group', 'scroll-area', 'separator',
+            'sheet', 'skeleton', 'slider', 'switch', 'table', 'toast', 'toggle'
+        }
+        
+        missing_components = [comp for comp in matches if comp in known_components]
+        return list(set(missing_components))  # Remove duplicates
 
 
 # Backward compatibility alias

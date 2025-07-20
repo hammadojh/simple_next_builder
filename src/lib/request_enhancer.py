@@ -38,6 +38,27 @@ class RequestEnhancer:
         
         print("🎯 Request Enhancer initialized")
     
+    def enhance_app_idea(self, app_idea: str) -> str:
+        """
+        Enhance an app idea for new app creation to make it more technical and specific.
+        
+        Args:
+            app_idea: Original app idea (e.g., "todo app", "weather dashboard")
+            
+        Returns:
+            Enhanced technical app specification with implementation details
+        """
+        print(f"🎯 Enhancing app idea: '{app_idea}'")
+        
+        # Use LLM to enhance the app idea if available
+        if self.openai_client:
+            enhanced_idea = self._llm_enhance_app_idea(app_idea)
+        else:
+            enhanced_idea = self._fallback_enhance_app_idea(app_idea)
+        
+        print(f"✅ Enhanced app idea: '{enhanced_idea[:100]}...'")
+        return enhanced_idea
+    
     def enhance_edit_request(self, 
                            user_request: str, 
                            app_path: str,
@@ -256,3 +277,94 @@ ENHANCED REQUEST:"""
             enhanced_request = f"{user_request} - implement this feature following the existing codebase patterns and architecture."
         
         return enhanced_request 
+
+    def _llm_enhance_app_idea(self, app_idea: str) -> str:
+        """Use LLM to enhance an app idea with detailed technical specifications."""
+        try:
+            prompt = f"""Enhance this app idea to be more technical and specific for a NextJS developer:
+
+ORIGINAL IDEA: {app_idea}
+
+Create a detailed technical specification that includes:
+1. Core functionality and features
+2. Suggested component structure
+3. State management approach
+4. UI/UX considerations
+5. Data flow and architecture
+6. Key technologies to use (shadcn/ui, Tailwind CSS, TypeScript)
+
+Be specific about what components should be created and how they should interact.
+Keep it practical and implementable.
+
+ENHANCED SPECIFICATION:"""
+
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "You are an expert NextJS architect who creates detailed technical specifications from app ideas."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=500,
+                temperature=0.7
+            )
+            
+            enhanced_idea = response.choices[0].message.content.strip()
+            return enhanced_idea
+            
+        except Exception as e:
+            print(f"⚠️ LLM enhancement failed: {str(e)}")
+            return self._fallback_enhance_app_idea(app_idea)
+
+    def _fallback_enhance_app_idea(self, app_idea: str) -> str:
+        """Fallback enhancement when LLM is not available."""
+        idea_lower = app_idea.lower()
+        
+        # Common app patterns and their enhancements
+        if any(word in idea_lower for word in ['todo', 'task', 'list']):
+            return f"""NextJS Todo Application - {app_idea}
+
+Technical Specification:
+- Create a TodoList component with full CRUD operations
+- Use TypeScript interfaces for Todo type definitions
+- Implement local storage persistence with useLocalStorage hook
+- Add filtering (all, active, completed) and sorting capabilities
+- Use shadcn/ui components (Button, Input, Checkbox, Card)
+- Implement responsive design with Tailwind CSS
+- Add proper form validation and user feedback"""
+
+        elif any(word in idea_lower for word in ['dashboard', 'analytics', 'chart']):
+            return f"""NextJS Dashboard Application - {app_idea}
+
+Technical Specification:
+- Create modular dashboard components with data visualization
+- Implement responsive grid layout for dashboard widgets
+- Use TypeScript for type safety and data modeling
+- Add state management for dashboard configuration
+- Use shadcn/ui components for consistent UI
+- Implement dark/light theme support
+- Add data fetching with proper loading states"""
+
+        elif any(word in idea_lower for word in ['weather', 'forecast']):
+            return f"""NextJS Weather Application - {app_idea}
+
+Technical Specification:
+- Create WeatherCard and WeatherDetails components
+- Implement geolocation and weather API integration
+- Use TypeScript interfaces for weather data
+- Add search functionality for different locations
+- Use shadcn/ui components for modern interface
+- Implement responsive design for mobile/desktop
+- Add error handling and loading states"""
+
+        else:
+            return f"""NextJS Application - {app_idea}
+
+Technical Specification:
+- Design a component-based architecture using React functional components
+- Implement TypeScript for type safety throughout the application
+- Use shadcn/ui component library for consistent, accessible UI
+- Apply Tailwind CSS for responsive styling and modern design
+- Implement proper state management (useState/useReducer)
+- Add local storage for data persistence where appropriate
+- Follow NextJS best practices with proper file structure
+- Ensure responsive design for all screen sizes"""

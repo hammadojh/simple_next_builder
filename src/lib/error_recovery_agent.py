@@ -23,7 +23,7 @@ from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
 
 # Import our corruption detector
-from .corruption_detector import FileCorruptionDetector, CorruptionLevel, CorruptionReport
+from .corruption_detector import FileCorruptionDetector, CorruptionSeverity, CorruptionIssue
 
 
 @dataclass

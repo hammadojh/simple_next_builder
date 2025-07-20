@@ -24,6 +24,28 @@ class CorruptionSeverity(Enum):
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
+    
+    def __lt__(self, other):
+        if not isinstance(other, CorruptionSeverity):
+            return NotImplemented
+        severity_order = {
+            CorruptionSeverity.LOW: 1,
+            CorruptionSeverity.MEDIUM: 2,
+            CorruptionSeverity.HIGH: 3,
+            CorruptionSeverity.CRITICAL: 4
+        }
+        return severity_order[self] < severity_order[other]
+    
+    def __le__(self, other):
+        return self == other or self < other
+    
+    def __gt__(self, other):
+        if not isinstance(other, CorruptionSeverity):
+            return NotImplemented
+        return not self <= other
+    
+    def __ge__(self, other):
+        return self == other or self > other
 
 
 @dataclass
