@@ -137,7 +137,7 @@ class BuildErrorLogger:
 
 
 class MasterBuilder:
-    def __init__(self):
+    def __init__(self, openai_api_key=None, openrouter_api_key=None, anthropic_api_key=None):
         """Initialize the master builder with all components."""
         # Get current working directory as project root
         self.project_root = Path.cwd()
@@ -148,7 +148,11 @@ class MasterBuilder:
         self.error_logger = BuildErrorLogger(str(self.project_root))
         
         # Initialize the AI app builder
-        self.app_builder = MultiLLMAppBuilder()
+        self.app_builder = MultiLLMAppBuilder(
+            openai_api_key=openai_api_key,
+            openrouter_api_key=openrouter_api_key,
+            anthropic_api_key=anthropic_api_key
+        )
         
         # Initialize MVP enhancer for complex app development
         self.mvp_enhancer = MVPEnhancer()
@@ -559,8 +563,8 @@ Multi-LLM Builder with validation
             print(enhanced_request)
             print("=" * 80)
             
-            # Create app builder instance for this specific app
-            app_builder = MultiLLMAppBuilder()
+            # Use existing app builder instance with configured API keys
+            app_builder = self.app_builder
             app_builder.app_name = app_name
             app_builder.apps_dir = Path(app_directory).parent
             
@@ -690,9 +694,9 @@ Frontend-Only MVP Builder with intelligent coordination
         self.error_logger.log_build_attempt(app_name, f"edit: {edit_idea[:50]}...", None)
         
         try:
-            # Create app builder instance for this specific app
+            # Use existing app builder instance with configured API keys
             print("🔧 Initializing robust intent-based editor...")
-            app_builder = MultiLLMAppBuilder()
+            app_builder = self.app_builder
             app_builder.app_name = app_name  # Set the app name
             app_builder.apps_dir = Path(app_directory).parent  # Set the apps directory
             
@@ -1498,6 +1502,7 @@ Examples:
     
     parser.add_argument("--openai-key", help="OpenAI API key (or set OPENAI_API_KEY env var)")
     parser.add_argument("--openrouter-key", help="OpenRouter API key (or set OPENROUTER_API_KEY env var)")
+    parser.add_argument("--anthropic-key", help="Anthropic API key (or set ANTHROPIC_API_KEY env var)")
     parser.add_argument('-i', '--idea', type=str, help='App idea/description')
     parser.add_argument('-n', '--name', type=str, help='Custom app name (optional)')
     parser.add_argument('-p', '--port', type=int, help='Port number for dev server (auto-detect if not specified)')
@@ -1509,7 +1514,11 @@ Examples:
     
     try:
         # Initialize the master builder
-        master = MasterBuilder()
+        master = MasterBuilder(
+            openai_api_key=args.openai_key,
+            openrouter_api_key=args.openrouter_key,
+            anthropic_api_key=args.anthropic_key
+        )
         
         # Handle edit mode
         if args.edit:

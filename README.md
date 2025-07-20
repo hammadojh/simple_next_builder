@@ -10,12 +10,16 @@ An AI-powered tool that automates NextJS app creation from simple prompts.
    ```
 
 2. **Set up API key**:
-   - Create a `.env` file with your OpenAI API key:
+   - **Recommended**: Create a `.env` file with your Anthropic API key (for Claude 4 Sonnet):
+     ```
+     ANTHROPIC_API_KEY=your_key_here
+     ```
+   - Alternative: Use OpenAI API key:
      ```
      OPENAI_API_KEY=your_key_here
      ```
    - Or get an OpenRouter key: `OPENROUTER_API_KEY=your_key_here`
-   - Get keys from: [OpenAI](https://platform.openai.com/api-keys) or [OpenRouter](https://openrouter.ai/)
+   - Get keys from: [Anthropic](https://console.anthropic.com/), [OpenAI](https://platform.openai.com/api-keys), or [OpenRouter](https://openrouter.ai/)
 
 ## Running
 
@@ -27,7 +31,7 @@ Then open: http://localhost:8001
 
 ### Command Line
 ```bash
-# Create a new app
+# Create a new app (uses Claude 4 Sonnet by default)
 python src/main.py --idea "A todo list app with dark mode"
 
 # Edit existing app
@@ -38,6 +42,9 @@ python src/main.py --interactive
 
 # List existing apps
 python src/main.py --list
+
+# Use specific API key
+python src/main.py --anthropic-key YOUR_KEY --idea "Todo app"
 ```
 
 ## ✨ NEW: LLM Coordinator System

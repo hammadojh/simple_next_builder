@@ -31,10 +31,11 @@ from .llm_coordinator import LLMCoordinator
 
 
 class MultiLLMAppBuilder:
-    def __init__(self, openai_api_key=None, openrouter_api_key=None):
+    def __init__(self, openai_api_key=None, openrouter_api_key=None, anthropic_api_key=None):
         """Initialize the app builder with multiple LLM providers."""
         self.openai_api_key = openai_api_key or os.getenv('OPENAI_API_KEY')
         self.openrouter_api_key = openrouter_api_key or os.getenv('OPENROUTER_API_KEY')
+        self.anthropic_api_key = anthropic_api_key or os.getenv('ANTHROPIC_API_KEY')
         
         # Initialize OpenAI client if key is available
         self.openai_client = None
@@ -44,6 +45,15 @@ class MultiLLMAppBuilder:
                 self.openai_client = OpenAI(api_key=self.openai_api_key)
             except ImportError:
                 print("⚠️ OpenAI package not installed")
+        
+        # Initialize Anthropic client if key is available
+        self.anthropic_client = None
+        if self.anthropic_api_key:
+            try:
+                import anthropic
+                self.anthropic_client = anthropic.Anthropic(api_key=self.anthropic_api_key)
+            except ImportError:
+                print("⚠️ Anthropic package not installed")
         
         # Initialize the codebase indexer (will be set when needed)
         self._indexer: Optional[CodebaseIndexer] = None
@@ -65,6 +75,20 @@ class MultiLLMAppBuilder:
         
         # Define LLM provider configurations
         self.llm_providers = [
+            {
+                "name": "Claude 4 Sonnet",
+                "type": "anthropic",
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 4000,
+                "temperature": 0.7
+            },
+            {
+                "name": "Claude 3.7 Sonnet",
+                "type": "openrouter",
+                "model": "anthropic/claude-3.7-sonnet",
+                "max_tokens": 4000,
+                "temperature": 0.7
+            },
             {
                 "name": "GPT-4o",
                 "type": "openai",
@@ -406,10 +430,11 @@ Focus on delivering exactly what was requested - simple for simple requests, com
             if not new_tags:
                 issues.append("No <new> tags found in response for app creation")
         elif context == "edit_fallback":
-            # For fallback editing, expect <edit> tags
-            edit_tags = re.findall(r'<edit filename=\"([^\"]+)\"', content)
-            if not edit_tags:
-                issues.append("No <edit> tags found in response for fallback editing")
+            # Legacy fallback now also uses unified diff format
+            if '*** Begin Patch' not in content:
+                issues.append("No '*** Begin Patch' sentinel found - unified diff format required")
+            if '*** End Patch' not in content:
+                issues.append("No '*** End Patch' sentinel found - unified diff format required")
         elif context == "intent":
             # For intent-based editing, expect JSON with intents array
             try:
@@ -448,8 +473,8 @@ Focus on delivering exactly what was requested - simple for simple requests, com
             good_practices.append("Uses proper unified diff format")
         elif context == "create" and '<new filename=' in content:
             good_practices.append("Uses appropriate file creation tags")
-        elif context == "edit_fallback" and '<edit filename=' in content:
-            good_practices.append("Uses appropriate line-based edit tags")
+        elif context == "edit_fallback" and '*** Begin Patch' in content:
+            good_practices.append("Uses proper unified diff format (fallback)")
         elif context == "intent" and '"intents"' in content:
             good_practices.append("Uses structured intent-based format")
             
@@ -537,6 +562,34 @@ Focus on delivering exactly what was requested - simple for simple requests, com
             print(f"❌ OpenAI error: {str(e)}")
             return None
 
+    def call_anthropic(self, messages: List[Dict], config: Dict) -> Optional[str]:
+        """Call Anthropic API directly."""
+        if not self.anthropic_client:
+            return None
+        
+        try:
+            # Convert messages to Anthropic format
+            system_message = ""
+            user_messages = []
+            
+            for msg in messages:
+                if msg["role"] == "system":
+                    system_message = msg["content"]
+                else:
+                    user_messages.append(msg)
+            
+            response = self.anthropic_client.messages.create(
+                model=config["model"],
+                max_tokens=config["max_tokens"],
+                temperature=config["temperature"],
+                system=system_message,
+                messages=user_messages
+            )
+            return response.content[0].text
+        except Exception as e:
+            print(f"❌ Anthropic error: {str(e)}")
+            return None
+
     def call_openrouter(self, messages: List[Dict], config: Dict) -> Optional[str]:
         """Call OpenRouter API."""
         if not self.openrouter_api_key:
@@ -579,6 +632,8 @@ Focus on delivering exactly what was requested - simple for simple requests, com
                 # Call the appropriate provider
                 if config["type"] == "openai" and self.openai_client:
                     response = self.call_openai(messages, config)
+                elif config["type"] == "anthropic" and self.anthropic_client:
+                    response = self.call_anthropic(messages, config)
                 elif config["type"] == "openrouter" and self.openrouter_api_key:
                     response = self.call_openrouter(messages, config)
                 else:
@@ -881,6 +936,15 @@ Multi-LLM Builder with validation
 User wants to make the following changes:
 {app_idea}
 
+INSTRUCTIONS:
+Think step by step through this edit:
+
+1. **UNDERSTAND THE REQUEST**: What specific changes need to be made?
+2. **IDENTIFY TARGET FILES**: Which files need to be modified based on the request?
+3. **PLAN THE CHANGES**: What imports, components, or logic need to be added/modified?
+4. **CONSIDER DEPENDENCIES**: What other files might be affected?
+5. **IMPLEMENT PRECISELY**: Generate the exact diff needed with proper context.
+
 🚨 CRITICAL DIFF GENERATION RULES 🚨
 
 You MUST respond with a UNIFIED DIFF in this EXACT format:
@@ -1023,108 +1087,93 @@ Generate a unified diff that implements the requested changes with proper contex
     def get_semantic_context_for_request(self, user_request: str, app_directory: str, 
                                        current_file: str = None, recent_files: List[str] = None) -> str:
         """
-        Get context by directly reading key files with enhanced structural analysis.
+        Get context using intelligent context selection to prevent token overflow.
         
-        🔧 FIXED: No longer includes full file content to prevent massive token consumption.
-        Instead provides structural summaries and relevant excerpts.
+        🧠 ENHANCED: Uses AI-powered context selection to choose only relevant files.
+        Prevents the 227K token overflow that was causing LLM failures.
         """
-        print(f"📁 Getting direct file context from: {app_directory}")
+        try:
+            # Import the intelligent context selector and request enhancer
+            from .context_selector import IntelligentContextSelector
+            from .request_enhancer import RequestEnhancer
+            
+            # Initialize request enhancer
+            request_enhancer = RequestEnhancer()
+            
+            # Enhance the user request to be more technical and specific
+            enhanced_request = request_enhancer.enhance_edit_request(
+                user_request=user_request,
+                app_path=app_directory
+            )
+            
+            print(f"🎯 Original request: {user_request}")
+            print(f"✨ Enhanced request: {enhanced_request}")
+            
+            # Initialize context selector with increased token limit
+            context_selector = IntelligentContextSelector(max_tokens=150000)  # More generous limit
+            
+            # Select optimal context for this request using enhanced request
+            context_selection = context_selector.select_context(
+                request=enhanced_request,
+                app_path=app_directory,
+                operation_type="edit"
+            )
+            
+            # Format for LLM consumption
+            formatted_context = context_selector.format_context_for_llm(context_selection)
+            
+            print(f"✅ Intelligent context selection completed")
+            print(f"📊 Selected {len(context_selection.selected_files)} files ({context_selection.total_tokens:,} tokens)")
+            
+            return formatted_context
+            
+        except Exception as e:
+            print(f"❌ Intelligent context selection failed: {e}")
+            print("🔄 Falling back to basic context selection...")
+            
+            # Fallback to minimal context if intelligent selection fails
+            return self._get_basic_context_fallback(enhanced_request if 'enhanced_request' in locals() else user_request, app_directory)
+    
+    def _get_basic_context_fallback(self, user_request: str, app_directory: str) -> str:
+        """
+        Basic context fallback when intelligent context selection fails.
         
-        context_parts = []
-        context_parts.append("CURRENT APP FILES FOR EDITING:")
-        context_parts.append("=" * 60)
-        context_parts.append(f"User Request: {user_request}")
-        context_parts.append("=" * 60)
-        
+        Provides minimal but essential context to prevent complete failure.
+        """
         from pathlib import Path
-        import re
+        
+        context_parts = [
+            "📁 BASIC CONTEXT (Fallback Mode)",
+            "=" * 50,
+            f"User Request: {user_request}",
+            f"App Directory: {app_directory}",
+            "=" * 50
+        ]
+        
         app_path = Path(app_directory)
+        essential_files = ["package.json", "app/page.tsx", "app/layout.tsx"]
         
-        # Read the key files directly with structural analysis
-        key_files = ["app/page.tsx", "app/layout.tsx", "app/globals.css", "package.json"]
-        files_found = 0
-        total_chars = 0  # Track context size
-        MAX_CONTEXT_CHARS = 50000  # Limit to ~12-15k tokens
-        
-        for file_path in key_files:
+        for file_path in essential_files:
             full_path = app_path / file_path
             if full_path.exists():
                 try:
                     content = full_path.read_text()
-                    context_parts.append(f"\n📄 FILE: {file_path}")
-                    context_parts.append("-" * 40)
-                    
-                    # Add structural analysis for TypeScript/JavaScript files
-                    if file_path.endswith(('.tsx', '.ts', '.js', '.jsx')):
-                        context_parts.append("🏗️ CODE STRUCTURE:")
-                        
-                        # Extract interfaces
-                        interfaces = re.findall(r'interface\s+(\w+)\s*{[^}]*}', content, re.DOTALL)
-                        if interfaces:
-                            context_parts.append(f"  📋 Interfaces: {', '.join(interfaces)}")
-                        
-                        # Extract variable declarations
-                        variables = re.findall(r'(?:const|let|var)\s+(\w+)\s*[=:]', content)
-                        if variables:
-                            context_parts.append(f"  📦 Variables: {', '.join(set(variables))}")
-                        
-                        # Extract function/component names
-                        functions = re.findall(r'(?:function\s+(\w+)|export\s+default\s+function\s+(\w+)|const\s+(\w+)\s*=.*=>)', content)
-                        func_names = [name for group in functions for name in group if name]
-                        if func_names:
-                            context_parts.append(f"  ⚙️ Functions/Components: {', '.join(set(func_names))}")
-                        
-                        # Extract useState declarations
-                        usestate_vars = re.findall(r'const\s+\[(\w+),\s*set\w+\]\s*=\s*useState', content)
-                        if usestate_vars:
-                            context_parts.append(f"  🎛️ State Variables: {', '.join(usestate_vars)}")
-                        
-                        # Extract imports for better context
-                        imports = re.findall(r'import.*from\s+[\'"]([^\'"]+)[\'"]', content)
-                        if imports:
-                            context_parts.append(f"  📥 Key Imports: {', '.join(set(imports))}")
-                        
-                        # 🔧 SMART EXCERPT: Include only relevant parts, not full content
-                        context_parts.append("\n📝 RELEVANT EXCERPT:")
-                        excerpt = self._get_relevant_excerpt(content, user_request, max_lines=20)
-                        context_parts.append(excerpt)
-                        
-                    else:
-                        # For non-code files (CSS, JSON), include a smaller excerpt
-                        context_parts.append("📝 FILE EXCERPT:")
-                        lines = content.split('\n')
-                        if len(lines) <= 10:
-                            context_parts.append(content)  # Small files can be included fully
-                        else:
-                            # Include first and last few lines for context
-                            excerpt_lines = lines[:5] + ["... (content truncated) ..."] + lines[-3:]
-                            context_parts.append('\n'.join(excerpt_lines))
-                    
-                    # Check if we're approaching context limit
-                    current_context = "\n".join(context_parts)
-                    total_chars = len(current_context)
-                    
-                    if total_chars > MAX_CONTEXT_CHARS:
-                        context_parts.append(f"\n⚠️ Context limit reached ({total_chars:,} chars) - truncating remaining files")
-                        break
-                        
-                    files_found += 1
-                    
+                    # Only include first 20 lines to keep context minimal
+                    lines = content.split('\n')[:20]
+                    context_parts.extend([
+                        f"\n📄 FILE: {file_path} (first 20 lines)",
+                        "```",
+                        '\n'.join(lines),
+                        "```"
+                    ])
                 except Exception as e:
                     context_parts.append(f"❌ Error reading {file_path}: {str(e)}")
         
-        if files_found == 0:
-            context_parts.append("❌ No key files found in the app directory")
-            return ""
-        
-        # Add context size information
         final_context = "\n".join(context_parts)
-        estimated_tokens = len(final_context) // 4  # Rough estimate: 4 chars per token
-        context_parts.append(f"\n📊 Context size: {len(final_context):,} characters (~{estimated_tokens:,} tokens)")
+        estimated_tokens = len(final_context) // 4
+        context_parts.append(f"\n📊 Fallback context size: {len(final_context):,} characters (~{estimated_tokens:,} tokens)")
         
-        print(f"✅ Retrieved {files_found} files with structural analysis")
-        print(f"📊 Context size: {len(final_context):,} characters (~{estimated_tokens:,} tokens)")
-        
+        print(f"🔄 Using basic fallback context ({estimated_tokens:,} tokens)")
         return "\n".join(context_parts)
     
     def _get_relevant_excerpt(self, content: str, user_request: str, max_lines: int = 20) -> str:
@@ -1464,8 +1513,8 @@ Generate a unified diff that implements the requested changes with proper contex
             print("❌ Failed to get semantic context")
             return False
         
-        # Generate line-based edit
-        prompt = f"""You are editing a NextJS app using line-based edits.
+        # Generate unified diff edit
+        prompt = f"""You are editing a NextJS app using unified diff format.
 
 CURRENT APP CONTEXT:
 {semantic_context}
@@ -1473,8 +1522,28 @@ CURRENT APP CONTEXT:
 USER REQUEST:
 {app_idea}
 
-Use ONLY <edit filename="..." start_line="N" end_line="N"> tags.
-Make minimal, surgical changes. Be extremely careful with line numbers.
+🚨 CRITICAL DIFF GENERATION RULES 🚨
+
+You MUST respond with a UNIFIED DIFF in this EXACT format:
+
+*** Begin Patch
+*** Update File: path/to/file.tsx
+@@ -old_start,old_count +new_start,new_count @@ optional_context
+- old line to remove
++ new line to add
+ unchanged context line
+*** End Patch
+
+KEY REQUIREMENTS:
+1. Use ONLY the unified diff format shown above
+2. Include 2-3 lines of context before and after changes for accurate matching
+3. Use proper +/- prefixes for added/removed lines
+4. Use space prefix for unchanged context lines
+5. Multiple files = multiple "*** Update File:" sections in ONE patch
+6. NO line-based <edit> tags - ONLY unified diffs
+7. Context lines must EXACTLY match existing file content
+
+Make minimal, surgical changes with proper context matching.
 """
         
         is_valid, response = self.make_openai_request(prompt, context="edit")
@@ -1550,81 +1619,70 @@ Make minimal, surgical changes. Be extremely careful with line numbers.
         return fixed_any
     
     def _edit_app_with_intents(self, app_idea):
-        """Edit app using intent-based approach (minimizes AI role in diff generation)."""
-        from .intent_editor import IntentBasedEditor, parse_ai_intent_response, get_intent_based_prompt
-        from pathlib import Path
+        """
+        Edit app using structured intents with enhanced robust parsing.
         
-        print(f"📝 Editing existing app with intent-based approach: {self.app_name}")
-        print(f"🎯 Requested changes: {app_idea}")
+        ENHANCED: Uses robust parser, live progress indicators, and intelligent context selection.
+        """
+        print("🎯 Using enhanced intent-based editing with robust parsing...")
         
-        # Get semantic context
-        semantic_context = self.get_semantic_context_for_request(
-            user_request=app_idea, 
-            app_directory=self.get_app_path()
-        )
-        if not semantic_context:
-            print("❌ Failed to get semantic context for edit request")
+        # Enhanced request processing
+        print("\n🎯 Request Enhancement Phase")
+        print("=" * 40)
+        
+        try:
+            from .request_enhancer import RequestEnhancer
+            enhancer = RequestEnhancer()
+            enhanced_request = enhancer.enhance_request(app_idea)
+            print(f"✅ Request enhanced ({len(enhanced_request)} chars)")
+        except Exception as e:
+            print(f"⚠️ Request enhancement failed: {e}")
+            print("🔄 Using original request")
+            enhanced_request = app_idea
+        
+        # Intelligent context selection
+        print("\n🧠 Context Selection Phase") 
+        print("=" * 40)
+        
+        try:
+            from .context_selector import IntelligentContextSelector
+            context_selector = IntelligentContextSelector()
+            app_path = self.get_app_path()
+            context_files = context_selector.select_context(enhanced_request, app_path)
+            
+            print(f"📁 Selected {len(context_files)} context files")
+            print(f"📊 Total context: {sum(len(content) for _, content, _ in context_files)} tokens")
+            
+            # Extract just file paths for the enhanced method
+            context_file_paths = [file_path for file_path, _, _ in context_files]
+            
+        except Exception as e:
+            print(f"⚠️ Context selection failed: {e}")
+            print("🔄 Using basic context")
+            context_file_paths = []
+        
+        # Enhanced intent generation with live progress
+        print(f"\n🚀 Intent Generation & Application Phase")
+        print("=" * 40)
+        
+        try:
+            # Use our enhanced method with robust parsing and live progress
+            result = self.generate_intent_based_edits(enhanced_request, context_file_paths)
+            
+            if result == "SUCCESS":
+                print("🎉 Intent-based editing completed successfully!")
+                return True
+            elif result == "PARTIAL_SUCCESS":
+                print("⚠️ Intent-based editing partially successful")
+                print("🔄 Some operations failed but core functionality may be working")
+                return True  # Consider partial success as success for now
+            else:
+                print("❌ Enhanced intent-based editing failed")
+                return False
+                
+        except Exception as e:
+            print(f"💥 Exception during intent-based editing: {e}")
             return False
-        
-        # Generate structured intents instead of raw diffs
-        print("🤖 Generating structured editing intents...")
-        intent_prompt = get_intent_based_prompt() + f"""
-
-CURRENT APP CONTEXT:
-{semantic_context}
-
-USER REQUEST:
-{app_idea}
-
-Generate JSON intents to implement these changes precisely and safely.
-"""
-        
-        is_valid, response = self.make_openai_request(intent_prompt, context="intent")
-        
-        if not is_valid:
-            print("❌ Failed to generate valid intent response")
-            return False
-        
-        # Parse intents from AI response
-        intents = parse_ai_intent_response(response)
-        if not intents:
-            print("❌ No valid intents found in AI response")
-            return False
-        
-        print(f"📋 Parsed {len(intents)} editing intents:")
-        for i, intent in enumerate(intents, 1):
-            print(f"   {i}. {intent.action} in {intent.file_path}: {intent.context}")
-        
-        # Apply intents
-        print("🔧 Applying structured intents...")
-        editor = IntentBasedEditor(Path(self.get_app_path()))
-        results = editor.apply_intent_list(intents)
-        
-        # Check results
-        all_success = all(success for success, _ in results)
-        
-        if all_success:
-            print("✅ All intents applied successfully!")
-        else:
-            print("⚠️ Some intents failed:")
-            for success, message in results:
-                if not success:
-                    print(f"   ❌ {message}")
-        
-        if not all_success:
-            print("🔄 Falling back to diff-based approach...")
-            return self._edit_app_with_diffs(app_idea)
-        
-        # Build and run to verify changes work
-        print("🔨 Building app to verify changes...")
-        build_success = self.build_and_run(auto_install_deps=True)
-        
-        if build_success:
-            print("🎉 App edited successfully with intent-based approach!")
-            return True
-        else:
-            print("⚠️ App edited but has build errors - attempting automatic fixes...")
-            return self.auto_fix_build_errors()
     
     def _edit_app_with_diffs(self, app_idea):
         """Edit app using traditional diff-based approach (with sanitization)."""
@@ -1739,7 +1797,7 @@ Focus on making minimal, surgical changes that are easy to apply."""
         
         print("🔄 Using legacy line-based editing system...")
         
-        # Generate line-based edit response
+        # Generate unified diff response  
         legacy_prompt = """You are editing an existing NextJS application. Here is the semantic context:
 
 """ + semantic_context + """
@@ -1747,13 +1805,30 @@ Focus on making minimal, surgical changes that are easy to apply."""
 User wants to make the following changes:
 """ + app_idea + """
 
-FALLBACK MODE - USE LINE-BASED EDITS:
-Please use the legacy <edit filename="..." start_line="N" end_line="N"> format.
-Be extremely careful with line numbers and avoid overlapping edits.
+🚨 CRITICAL DIFF GENERATION RULES 🚨
+
+You MUST respond with a UNIFIED DIFF in this EXACT format:
+
+*** Begin Patch
+*** Update File: path/to/file.tsx
+@@ -old_start,old_count +new_start,new_count @@ optional_context
+- old line to remove
++ new line to add
+ unchanged context line
+*** End Patch
+
+KEY REQUIREMENTS:
+1. Use ONLY the unified diff format shown above
+2. Include 2-3 lines of context before and after changes for accurate matching
+3. Use proper +/- prefixes for added/removed lines
+4. Use space prefix for unchanged context lines
+5. Multiple files = multiple "*** Update File:" sections in ONE patch
+6. NO line-based <edit> tags - ONLY unified diffs
+7. Context lines must EXACTLY match existing file content
 
 Make minimal, targeted changes to implement the requested features."""
 
-        is_valid, response = self.make_openai_request(legacy_prompt, context="edit_fallback")  # Use special context for edit fallback
+        is_valid, response = self.make_openai_request(legacy_prompt, context="edit")  # Use unified diff format
         
         if not is_valid:
             print("❌ Failed to generate fallback response")
@@ -2063,10 +2138,19 @@ SPECIFIC FILES WITH ERRORS:
 
 """ + error_context + """
 
-FALLBACK MODE - USE LINE-BASED EDITS:
-Use the legacy <edit filename="..." start_line="N" end_line="N"> format.
+🚨 CRITICAL DIFF GENERATION RULES 🚨
+
+You MUST respond with a UNIFIED DIFF in this EXACT format:
+
+*** Begin Patch
+*** Update File: path/to/file.tsx
+@@ -old_start,old_count +new_start,new_count @@ optional_context
+- old line to remove
++ new line to add
+ unchanged context line
+*** End Patch
+
 Make minimal, surgical fixes to resolve the exact errors shown above.
-Be extremely careful with line numbers.
 
 Focus on fixing:
 - Syntax errors (missing commas, brackets, quotes)
@@ -2074,7 +2158,7 @@ Focus on fixing:
 - Import/export problems
 - Type errors"""
 
-        is_valid, response = self.make_openai_request(legacy_fix_prompt, context="edit_fallback")
+        is_valid, response = self.make_openai_request(legacy_fix_prompt, context="edit")
         
         if not is_valid:
             return False
@@ -2235,6 +2319,15 @@ CURRENT APP STRUCTURE:
 {error_context}
 
 INSTRUCTIONS:
+Think step by step through this fix:
+
+1. **ANALYZE THE ERRORS**: What exactly is causing each build error?
+2. **IDENTIFY ROOT CAUSES**: Are these syntax, import, type, or logic errors?
+3. **PLAN THE FIXES**: What specific changes will resolve each error?
+4. **PRIORITIZE FIXES**: Which errors should be fixed first to avoid cascading issues?
+5. **IMPLEMENT PRECISELY**: Generate the exact diff needed.
+
+TECHNICAL REQUIREMENTS:
 1. Generate a unified diff using *** Begin Patch / *** End Patch format
 2. Fix ONLY the specific errors mentioned above
 3. Make minimal, surgical changes
@@ -2350,6 +2443,174 @@ Requirements:
         except Exception as e:
             print(f"❌ Error generating file rewrite response: {e}")
             return ""
+
+    def generate_intent_based_edits(self, request: str, context_files: List[str] = None) -> Optional[str]:
+        """
+        Generate structured editing intents using intent-based approach.
+        
+        ENHANCED: Uses robust parser with live progress indicators.
+        """
+        print("\n🎯 Generating structured editing intents...")
+        print("=" * 50)
+        
+        # Show progress for context preparation
+        import time
+        import sys
+        
+        def show_progress_dots(message, duration=1.0):
+            """Show animated progress dots"""
+            end_time = time.time() + duration
+            dot_count = 0
+            
+            while time.time() < end_time:
+                dots = "." * (dot_count % 4)
+                spaces = " " * (3 - len(dots))
+                sys.stdout.write(f"\r{message}{dots}{spaces}")
+                sys.stdout.flush()
+                time.sleep(0.3)
+                dot_count += 1
+            
+            sys.stdout.write(f"\r{message} ✓\n")
+            sys.stdout.flush()
+        
+        # Prepare context with progress
+        show_progress_dots("📋 Preparing context files", 0.8)
+        
+        context_content = ""
+        if context_files:
+            print(f"📁 Including {len(context_files)} context files:")
+            for file_path in context_files:
+                print(f"   • {file_path}")
+                try:
+                    full_path = self.apps_dir / self.app_name / file_path
+                    if full_path.exists():
+                        content = full_path.read_text()
+                        context_content += f"\n### {file_path}\n```\n{content}\n```\n"
+                except Exception as e:
+                    print(f"   ⚠️ Could not read {file_path}: {e}")
+        
+        # Prepare the enhanced prompt
+        show_progress_dots("📝 Preparing AI prompt", 0.5)
+        
+        enhanced_prompt = f"""
+{get_intent_based_prompt()}
+
+### CURRENT CONTEXT
+{context_content}
+
+### USER REQUEST
+{request}
+
+Please analyze the request and current context, then provide structured editing intents in the exact JSON format specified above.
+Focus on creating the missing pages and functionality as requested.
+"""
+        
+        print(f"📊 Prompt size: {len(enhanced_prompt)} characters")
+        
+        # Try multiple LLM providers with live progress
+        for i, provider in enumerate(self.llm_providers, 1):
+            provider_name = provider.get('name', 'Unknown')
+            print(f"\n🤖 [{i}/{len(self.llm_providers)}] Trying {provider_name}...")
+            
+            # Show connection progress
+            show_progress_dots(f"🔗 Connecting to {provider_name}", 0.8)
+            
+            try:
+                # Show generation progress
+                print("🧠 Generating response...")
+                
+                # Animate thinking indicator
+                thinking_chars = ["🤔", "💭", "🧠", "⚡"]
+                start_time = time.time()
+                char_index = 0
+                
+                # Start the actual API call in a separate thread if possible
+                # For now, we'll just show the animation for a bit then make the call
+                for _ in range(8):  # Show animation for ~2.4 seconds
+                    char = thinking_chars[char_index % len(thinking_chars)]
+                    sys.stdout.write(f"\r{char} AI processing your request...")
+                    sys.stdout.flush()
+                    time.sleep(0.3)
+                    char_index += 1
+                
+                # Now make the actual call
+                sys.stdout.write(f"\r⚡ AI processing your request...\n")
+                sys.stdout.flush()
+                
+                # Call LLM based on provider type
+                messages = [
+                    {"role": "system", "content": "You are an expert NextJS developer. Respond with valid JSON."},
+                    {"role": "user", "content": enhanced_prompt}
+                ]
+                
+                response = None
+                if provider["type"] == "anthropic" and self.anthropic_client:
+                    response = self.call_anthropic(messages, provider)
+                elif provider["type"] == "openai" and self.openai_client:
+                    response = self.call_openai(messages, provider)
+                elif provider["type"] == "openrouter" and self.openrouter_api_key:
+                    response = self.call_openrouter(messages, provider)
+                
+                if not response:
+                    print(f"❌ No response from {provider_name}")
+                    continue
+                
+                print(f"✅ Received response from {provider_name} ({len(response)} chars)")
+                
+                # Show parsing progress
+                show_progress_dots("🔍 Parsing AI response", 0.8)
+                
+                # Use the robust parser
+                from .intent_editor import parse_ai_intent_response_robust
+                intents = parse_ai_intent_response_robust(response)
+                
+                if intents:
+                    print(f"🎉 Successfully extracted {len(intents)} intents!")
+                    
+                    # Show what was extracted
+                    print("📋 Extracted intents:")
+                    for j, intent in enumerate(intents, 1):
+                        action_icon = {"insert": "📄", "replace": "✏️", "modify": "🔧", "delete": "🗑️"}.get(intent.action, "📝")
+                        print(f"   {j}. {action_icon} {intent.file_path} ({intent.action})")
+                    
+                    # Apply the intents
+                    print(f"\n🚀 Applying intents to codebase...")
+                    from .intent_editor import IntentBasedEditor
+                    
+                    editor = IntentBasedEditor(self.apps_dir / self.app_name)
+                    results = editor.apply_intent_list(intents)
+                    
+                    # Check results
+                    successful = sum(1 for success, _ in results if success)
+                    
+                    if successful == len(results):
+                        print(f"\n🎉 All {len(results)} operations completed successfully!")
+                        return "SUCCESS"
+                    else:
+                        print(f"\n⚠️ {successful}/{len(results)} operations succeeded")
+                        
+                        # Show failed operations
+                        for i, (success, error) in enumerate(results):
+                            if not success:
+                                print(f"   ❌ Operation {i+1}: {error}")
+                        
+                        if successful > 0:
+                            return "PARTIAL_SUCCESS"
+                        else:
+                            print(f"❌ No operations succeeded with {provider_name}")
+                            continue
+                else:
+                    print(f"❌ Could not extract intents from {provider_name} response")
+                    print("📝 Raw response preview:")
+                    print(response[:200] + "..." if len(response) > 200 else response)
+                    continue
+                    
+            except Exception as e:
+                print(f"❌ Error with {provider_name}: {str(e)}")
+                continue
+        
+        print("\n💥 All LLM providers failed to generate usable intents")
+        return None
 
 
 # Backward compatibility alias

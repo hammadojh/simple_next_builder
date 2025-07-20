@@ -357,11 +357,29 @@ Focus on creating rich, interactive, production-ready frontend applications."""
 
     def _call_coordinator_llm(self, prompt: str, context: str) -> Optional[str]:
         """Call the coordinator LLM with the given prompt."""
+        # Prefer Anthropic Claude 4 Sonnet if available, fallback to OpenAI GPT-4
+        if self.app_builder and self.app_builder.anthropic_client:
+            try:
+                print("🧠 Using Claude 4 Sonnet for coordination...")
+                messages = [{"role": "user", "content": prompt}]
+                response = self.app_builder.anthropic_client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=3000,
+                    temperature=0.3,
+                    system="You are a Senior Software Architect AI that creates detailed execution plans for NextJS development tasks. Always respond with valid JSON.",
+                    messages=messages
+                )
+                return response.content[0].text.strip()
+            except Exception as e:
+                print(f"❌ Claude coordination failed, falling back to GPT-4: {str(e)}")
+        
+        # Fallback to OpenAI GPT-4
         if not self.openai_client:
-            print("⚠️ No OpenAI client available for coordination")
+            print("⚠️ No LLM client available for coordination")
             return None
         
         try:
+            print("🧠 Using GPT-4 for coordination...")
             response = self.openai_client.chat.completions.create(
                 model="gpt-4",
                 messages=[
@@ -703,18 +721,81 @@ Make sure the file is complete and follows NextJS/TypeScript best practices.
             # Gather context for editing
             context_info = self._gather_context_for_task(task)
             
-            # Create focused edit prompt
+            # Enhance the task description for better specificity
+            try:
+                from .request_enhancer import RequestEnhancer
+                enhancer = RequestEnhancer()
+                
+                if hasattr(self.app_builder, 'get_app_path'):
+                    app_path = self.app_builder.get_app_path()
+                    enhanced_description = enhancer.enhance_edit_request(
+                        user_request=task.description,
+                        app_path=app_path,
+                        context_summary=context_info[:500]  # Brief context summary
+                    )
+                else:
+                    enhanced_description = task.description
+            except Exception as e:
+                print(f"⚠️ Request enhancement failed: {e}")
+                enhanced_description = task.description
+            
+            # Create focused edit prompt with proper diff format
             edit_prompt = f"""You are editing a specific file in a NextJS application.
 
-TASK: {task.description}
+TASK: {enhanced_description}
+ORIGINAL TASK: {task.description}
 INSTRUCTIONS: {task.llm_instructions}
 
 CURRENT CONTEXT:
 {context_info}
 
-Generate the changes using the intent-based editing approach.
-Be precise and make only the necessary changes to accomplish the task.
-"""
+STEP-BY-STEP APPROACH:
+Think through this edit systematically:
+
+1. **ANALYZE THE TASK**: What specific changes are needed?
+2. **IDENTIFY TARGET FILES**: Which files need modification?
+3. **PLAN IMPLEMENTATION**: What code changes will accomplish this?
+4. **CONSIDER IMPACTS**: What other files might be affected?
+5. **EXECUTE PRECISELY**: Generate the exact diff needed.
+
+🚨 CRITICAL DIFF GENERATION RULES 🚨
+
+You MUST respond with a UNIFIED DIFF in this EXACT format:
+
+*** Begin Patch
+*** Update File: path/to/file.tsx
+@@ -old_start,old_count +new_start,new_count @@ optional_context
+- old line to remove
++ new line to add
+ unchanged context line
+*** End Patch
+
+KEY REQUIREMENTS:
+1. Use ONLY the unified diff format shown above
+2. Include 2-3 lines of context before and after changes for accurate matching
+3. Use proper +/- prefixes for added/removed lines
+4. Use space prefix for unchanged context lines
+5. Multiple files = multiple "*** Update File:" sections in ONE patch
+6. NO line-based <edit> tags - ONLY unified diffs
+7. Context lines must EXACTLY match existing file content
+
+EXAMPLE:
+*** Begin Patch
+*** Update File: app/layout.tsx
+@@ -3,6 +3,7 @@
+ import './globals.css';
++import Navigation from '@/components/Navigation';
+ 
+ export default function RootLayout({{ children }}: {{ children: React.ReactNode }}) {{
+   return (
+     <html lang="en">
+       <body className="bg-gray-50">
++        <Navigation />
+         {{children}}
+       </body>
+*** End Patch
+
+Generate a unified diff that implements the requested changes with proper context matching."""
             
             # Use intent-based editing for more reliability
             success = self.app_builder._edit_app_with_intents(edit_prompt)
