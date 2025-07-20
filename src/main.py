@@ -449,22 +449,18 @@ Multi-LLM Builder with validation
                         self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", True)
                         # Don't return False here - app was created, just might have minor issues
                 
-                # Step 7: Start the development server
-                update_current_task("starting development server")
+                # Step 7: App creation completed successfully
+                update_current_task("app creation completed")
+                print(f"\n✅ NextJS app '{app_name}' created successfully!")
+                print(f"📁 Location: {app_directory}")
+                print(f"🚀 To start the dev server, run:")
+                print(f"   cd apps/{app_name}")
+                print(f"   npm run dev")
                 if port:
-                    print(f"\n🚀 Step 7: Starting development server on port {port}...")
-                else:
-                    print(f"\n🚀 Step 7: Starting development server...")
+                    print(f"   Or: npm run dev -- --port {port}")
                 
-                if self.start_dev_server(app_directory, port):
-                    print(f"✅ NextJS app '{app_name}' created and running successfully!")
-                    self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", True)
-                    return True
-                else:
-                    print(f"⚠️  NextJS app '{app_name}' created but server start failed")
-                    print("💡 You can manually start it with: cd apps/{app_name} && npm run dev")
-                    self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", True)
-                    return True
+                self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", True)
+                return True
                 
             except Exception as e:
                 print(f"❌ Error in enhanced build process: {str(e)}")

@@ -31,7 +31,7 @@ class LoaderConfig:
     """Configuration for a progress loader."""
     task_name: str
     style: LoaderStyle = LoaderStyle.SPINNER
-    update_interval: float = 0.1
+    update_interval: float = 0.15  # Increased from 0.1 to reduce flicker
     show_elapsed: bool = True
     prefix: str = ""
     suffix: str = ""
@@ -57,6 +57,7 @@ class ProgressLoader:
         self.start_time: Optional[float] = None
         self.current_frame = 0
         self._stop_event = threading.Event()
+        self._lock = threading.Lock()  # Add lock for thread safety
         
         # Animation frames for different styles
         self.animations = {
@@ -73,28 +74,38 @@ class ProgressLoader:
     
     def start(self):
         """Start the progress loader animation."""
-        if self.is_running:
-            return
-        
-        self.is_running = True
-        self.start_time = time.time()
-        self._stop_event.clear()
-        self.thread = threading.Thread(target=self._animate, daemon=True)
-        self.thread.start()
+        with self._lock:
+            if self.is_running:
+                return
+            
+            self.is_running = True
+            self.start_time = time.time()
+            self._stop_event.clear()
+            self.current_frame = 0
+            self.thread = threading.Thread(target=self._animate, daemon=True)
+            self.thread.start()
     
     def stop(self, success_message: Optional[str] = None):
         """Stop the progress loader and optionally show a success message."""
-        if not self.is_running:
-            return
+        with self._lock:
+            if not self.is_running:
+                return
+            
+            self.is_running = False
+            self._stop_event.set()
         
-        self.is_running = False
-        self._stop_event.set()
-        
-        if self.thread:
-            self.thread.join(timeout=1.0)
+        # Wait for thread to finish (outside the lock to avoid deadlock)
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=0.5)  # Reduced timeout for faster cleanup
+            
+            # Force stop if thread is still alive
+            if self.thread.is_alive():
+                # Clear the line and move on
+                sys.stdout.write("\r" + " " * 100 + "\r")
+                sys.stdout.flush()
         
         # Clear the current line and show final message
-        sys.stdout.write("\r" + " " * 100 + "\r")
+        sys.stdout.write("\r" + " " * 120 + "\r")  # Clear wider area
         if success_message:
             elapsed = time.time() - (self.start_time or 0)
             sys.stdout.write(f"✅ {success_message} ({elapsed:.1f}s)\n")
@@ -102,31 +113,58 @@ class ProgressLoader:
     
     def update_task(self, new_task_name: str):
         """Update the task name while the loader is running."""
-        self.config.task_name = new_task_name
+        with self._lock:
+            if self.is_running:
+                self.config.task_name = new_task_name
     
     def _animate(self):
         """Animation loop that runs in a separate thread."""
-        while not self._stop_event.is_set():
-            frame = self._get_current_frame()
-            elapsed = time.time() - (self.start_time or 0)
-            
-            # Build the display line
-            if self.config.show_elapsed:
-                elapsed_str = f" ({elapsed:.1f}s)"
-            else:
-                elapsed_str = ""
-            
-            line = f"\r{self.config.prefix}{frame} {self.config.task_name}{elapsed_str}{self.config.suffix}"
-            
-            # Ensure line doesn't exceed terminal width (assume 120 chars max)
-            if len(line) > 115:
-                line = line[:112] + "..."
-            
-            sys.stdout.write(line)
-            sys.stdout.flush()
-            
-            self.current_frame = (self.current_frame + 1) % len(self._get_animation_frames())
-            time.sleep(self.config.update_interval)
+        try:
+            while not self._stop_event.is_set():
+                if not self.is_running:  # Double check
+                    break
+                    
+                frame = self._get_current_frame()
+                elapsed = time.time() - (self.start_time or 0)
+                
+                # Build the display line
+                with self._lock:
+                    task_name = self.config.task_name
+                    show_elapsed = self.config.show_elapsed
+                    prefix = self.config.prefix
+                    suffix = self.config.suffix
+                
+                if show_elapsed:
+                    elapsed_str = f" ({elapsed:.1f}s)"
+                else:
+                    elapsed_str = ""
+                
+                line = f"\r{prefix}{frame} {task_name}{elapsed_str}{suffix}"
+                
+                # Ensure line doesn't exceed terminal width (assume 120 chars max)
+                if len(line) > 115:
+                    line = line[:112] + "..."
+                
+                # Only write if we're still supposed to be running
+                if self.is_running and not self._stop_event.is_set():
+                    try:
+                        sys.stdout.write(line)
+                        sys.stdout.flush()
+                    except:
+                        break  # If stdout writing fails, stop
+                
+                self.current_frame = (self.current_frame + 1) % len(self._get_animation_frames())
+                
+                # Use the stop event for timing instead of sleep to be more responsive
+                if self._stop_event.wait(self.config.update_interval):
+                    break  # Stop event was set
+                    
+        except Exception:
+            pass  # Silently handle any animation errors
+        finally:
+            # Ensure we mark as not running when thread exits
+            with self._lock:
+                self.is_running = False
     
     def _get_current_frame(self) -> str:
         """Get the current animation frame."""
@@ -166,6 +204,7 @@ class ProgressManager:
     def __init__(self):
         self.active_loaders: List[ProgressLoader] = []
         self.loader_stack: List[ProgressLoader] = []
+        self._manager_lock = threading.Lock()  # Add manager lock
     
     @contextmanager
     def show_progress(self, task_name: str, style: LoaderStyle = LoaderStyle.SPINNER):
@@ -174,13 +213,30 @@ class ProgressManager:
         loader = ProgressLoader(config)
         
         try:
+            # Stop any existing loader in the stack before starting new one
+            with self._manager_lock:
+                if self.loader_stack:
+                    current_loader = self.loader_stack[-1]
+                    current_loader.stop()
+                
+                self.loader_stack.append(loader)
+            
             loader.start()
-            self.loader_stack.append(loader)
             yield loader
+            
         finally:
-            if loader in self.loader_stack:
-                self.loader_stack.remove(loader)
+            # Always cleanup this loader
             loader.stop()
+            
+            with self._manager_lock:
+                if loader in self.loader_stack:
+                    self.loader_stack.remove(loader)
+                
+                # If there are remaining loaders in the stack, restart the previous one
+                if self.loader_stack:
+                    previous_loader = self.loader_stack[-1]
+                    if not previous_loader.is_running:
+                        previous_loader.start()
     
     @contextmanager
     def llm_request_progress(self, provider_name: str = "AI"):
@@ -219,8 +275,17 @@ class ProgressManager:
     
     def update_current_task(self, new_task_name: str):
         """Update the current active loader's task name."""
-        if self.loader_stack:
-            self.loader_stack[-1].update_task(new_task_name)
+        with self._manager_lock:
+            if self.loader_stack:
+                current_loader = self.loader_stack[-1]
+                current_loader.update_task(new_task_name)
+    
+    def cleanup_all(self):
+        """Emergency cleanup of all loaders."""
+        with self._manager_lock:
+            for loader in self.loader_stack[:]:  # Copy to avoid modification during iteration
+                loader.stop()
+            self.loader_stack.clear()
 
 
 # Global progress manager instance
@@ -275,6 +340,11 @@ def update_current_task(new_task_name: str):
     progress_manager.update_current_task(new_task_name)
 
 
+def cleanup_all_loaders():
+    """Emergency cleanup function."""
+    progress_manager.cleanup_all()
+
+
 # Decorator for automatic progress loading
 def with_progress(task_name: str, style: LoaderStyle = LoaderStyle.SPINNER):
     """Decorator to automatically show progress for a function."""
@@ -284,6 +354,11 @@ def with_progress(task_name: str, style: LoaderStyle = LoaderStyle.SPINNER):
                 return func(*args, **kwargs)
         return wrapper
     return decorator
+
+
+# Cleanup function for graceful shutdown
+import atexit
+atexit.register(cleanup_all_loaders)
 
 
 if __name__ == "__main__":
@@ -303,7 +378,7 @@ if __name__ == "__main__":
     
     for style, task in styles:
         with show_progress(task, style):
-            time.sleep(3)
+            time.sleep(2)
         print()
     
     print("✅ Demo completed!") 
