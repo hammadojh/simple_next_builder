@@ -22,6 +22,13 @@ import difflib
 # Import our corruption detection system
 from .corruption_detector import FileCorruptionDetector, CorruptionSeverity
 
+# Replace the manual progress indicators with our centralized system
+from .progress_loader import (
+    show_progress, llm_progress, analysis_progress, 
+    build_progress, file_progress, update_current_task,
+    LoaderStyle
+)
+
 
 @dataclass
 class EditIntent:
@@ -304,91 +311,62 @@ class IntentBasedEditor:
             print("⚠️ No intents to apply")
             return []
         
-        print(f"\n🚀 Starting intent application with {len(intents)} operations")
-        print("=" * 60)
-        
-        results = []
-        
-        # Group intents by file for efficient processing
-        print("📁 Organizing intents by target file...")
-        intents_by_file = {}
-        for intent in intents:
-            if intent.file_path not in intents_by_file:
-                intents_by_file[intent.file_path] = []
-            intents_by_file[intent.file_path].append(intent)
-        
-        print(f"📊 Processing {len(intents_by_file)} files:")
-        for i, (file_path, file_intents) in enumerate(intents_by_file.items(), 1):
-            print(f"   {i}. {file_path} ({len(file_intents)} operation{'s' if len(file_intents) > 1 else ''})")
-        
-        print("\n" + "=" * 60)
-        
-        # Process each file with live progress
-        for file_index, (file_path, file_intents) in enumerate(intents_by_file.items(), 1):
-            print(f"\n📄 [{file_index}/{len(intents_by_file)}] Processing: {file_path}")
-            print("-" * 40)
+        with file_progress(f"applying {len(intents)} editing intents"):
+            print(f"\n🚀 Starting intent application with {len(intents)} operations")
+            print("=" * 60)
             
-            # Show loading indicator
-            import time
-            import sys
+            results = []
             
-            def show_progress_spinner(message, duration=0.5):
-                """Show a spinning progress indicator"""
-                spinner_chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-                end_time = time.time() + duration
-                
-                while time.time() < end_time:
-                    for char in spinner_chars:
-                        sys.stdout.write(f"\r{char} {message}")
-                        sys.stdout.flush()
-                        time.sleep(0.1)
-                        if time.time() >= end_time:
-                            break
-                
-                sys.stdout.write(f"\r✓ {message}\n")
-                sys.stdout.flush()
+            # Group intents by file for efficient processing
+            update_current_task("organizing intents by target file")
+            print("📁 Organizing intents by target file...")
+            intents_by_file = {}
+            for intent in intents:
+                if intent.file_path not in intents_by_file:
+                    intents_by_file[intent.file_path] = []
+                intents_by_file[intent.file_path].append(intent)
             
-            try:
-                # Show progress for file processing
-                show_progress_spinner(f"Analyzing {file_path}...", 0.3)
+            print(f"📊 Processing {len(intents_by_file)} files:")
+            for i, (file_path, file_intents) in enumerate(intents_by_file.items(), 1):
+                print(f"   {i}. {file_path} ({len(file_intents)} operation{'s' if len(file_intents) > 1 else ''})")
+            
+            print("\n" + "=" * 60)
+            
+            # Process each file with live progress
+            for file_index, (file_path, file_intents) in enumerate(intents_by_file.items(), 1):
+                update_current_task(f"[{file_index}/{len(intents_by_file)}] processing {file_path}")
+                print(f"\n📄 [{file_index}/{len(intents_by_file)}] Processing: {file_path}")
+                print("-" * 40)
                 
-                result = self._apply_file_intents_with_validation_and_progress(file_path, file_intents, file_index, len(intents_by_file))
-                results.append(result)
-                
-                if result[0]:
-                    print(f"✅ Successfully processed {file_path}")
-                else:
-                    print(f"❌ Failed to process {file_path}: {result[1]}")
+                try:
+                    result = self._apply_file_intents_with_validation_and_progress(file_path, file_intents, file_index, len(intents_by_file))
+                    results.append(result)
                     
-            except Exception as e:
-                error_msg = f"Exception while processing {file_path}: {str(e)}"
-                print(f"💥 {error_msg}")
-                results.append((False, error_msg))
-        
-        # Final summary
-        print("\n" + "=" * 60)
-        print("📊 OPERATION SUMMARY")
-        print("=" * 60)
-        
-        successful = sum(1 for success, _ in results if success)
-        total = len(results)
-        
-        print(f"📈 Success Rate: {successful}/{total} files ({successful/total*100:.1f}%)")
-        
-        if successful > 0:
-            print("\n✅ Successfully processed:")
-            for i, ((file_path, _), (success, _)) in enumerate(zip(intents_by_file.items(), results), 1):
-                if success:
-                    print(f"   {i}. {file_path}")
-        
-        if successful < total:
-            print("\n❌ Failed to process:")
-            for i, ((file_path, _), (success, error)) in enumerate(zip(intents_by_file.items(), results), 1):
-                if not success:
-                    print(f"   {i}. {file_path} - {error}")
-        
-        print("\n🎉 Intent application completed!")
-        return results
+                    if result[0]:
+                        print(f"✅ Successfully processed {file_path}")
+                    else:
+                        print(f"❌ Failed to process {file_path}: {result[1]}")
+                        
+                except Exception as e:
+                    error_msg = f"Exception while processing {file_path}: {str(e)}"
+                    print(f"💥 {error_msg}")
+                    results.append((False, error_msg))
+            
+            # Final summary
+            print("\n" + "=" * 60)
+            print("📊 OPERATION SUMMARY")
+            print("=" * 60)
+            
+            successful = sum(1 for result, _ in results if result)
+            failed = len(results) - successful
+            
+            print(f"✅ Successfully processed: {successful}/{len(results)} files")
+            if failed > 0:
+                print(f"❌ Failed to process: {failed}/{len(results)} files")
+            
+            print("=" * 60)
+            
+            return results
     
     def _apply_file_intents_with_validation_and_progress(self, file_path: str, intents: List[EditIntent], file_index: int, total_files: int) -> Tuple[bool, str]:
         """Apply all intents for a single file with detailed progress indicators."""
@@ -403,26 +381,18 @@ class IntentBasedEditor:
                 creation_intent = creation_intents[0]
                 print(f"📄 Creating new file: {file_path}")
                 
-                # Show progress
-                import time
-                import sys
-                
-                for i in range(3):
-                    sys.stdout.write(f"\r   {'.' * (i + 1)} Writing file content")
-                    sys.stdout.flush()
-                    time.sleep(0.2)
-                sys.stdout.write(f"\r   ✓ File content written\n")
-                sys.stdout.flush()
-                
-                target_file.parent.mkdir(parents=True, exist_ok=True)
-                target_file.write_text(creation_intent.replacement)
+                # Replace manual progress with centralized system
+                with file_progress(f"creating {file_path}"):
+                    update_current_task("writing file content")
+                    target_file.parent.mkdir(parents=True, exist_ok=True)
+                    target_file.write_text(creation_intent.replacement)
                 
                 # Remove the creation intent from the list since it's handled
                 intents = [intent for intent in intents if intent != creation_intent]
                 
                 # If there are remaining intents, continue processing them
                 if not intents:
-                    print(f"   📝 {len(creation_intent.replacement.split())} lines written")
+                    print(f"   📝 {len(creation_intent.replacement.splitlines())} lines written")
                     return True, f"Created new file: {file_path}"
             else:
                 return False, f"File not found: {file_path}"
@@ -439,17 +409,11 @@ class IntentBasedEditor:
             # ENHANCED: Pre-edit corruption detection with progress
             print(f"   🔍 Scanning for corruption issues...")
             
-            import time
-            import sys
-            for i in range(2):
-                sys.stdout.write(f"\r   {'🔍' if i % 2 == 0 else '🔎'} Analyzing file structure...")
-                sys.stdout.flush()
-                time.sleep(0.3)
-            
-            is_corrupted, severity = self.corruption_detector.is_file_corrupted(file_path, original_content)
+            with analysis_progress("file structure"):
+                is_corrupted, severity = self.corruption_detector.is_file_corrupted(file_path, original_content)
             
             if is_corrupted:
-                print(f"\r   ⚠️ Corruption detected: {severity.value}")
+                print(f"   ⚠️ Corruption detected: {severity.value}")
                 if severity == CorruptionSeverity.CRITICAL:
                     print(f"   🚨 Attempting automatic recovery...")
                     # Try to restore from backup
@@ -460,7 +424,7 @@ class IntentBasedEditor:
                     else:
                         print(f"   ❌ Could not restore from backup - applying conservative edits")
             else:
-                print(f"\r   ✅ File structure validated")
+                print(f"   ✅ File structure validated")
             
             current_content = original_content
             
@@ -475,61 +439,42 @@ class IntentBasedEditor:
                     
                     print(f"      [{i}/{len(intents)}] {intent.action}: {intent.context[:50]}{'...' if len(intent.context) > 50 else ''}")
                     
-                    # Show progress for each operation
-                    import time
-                    import sys
+                    # Use centralized progress system
+                    with show_progress(f"{intent.action} operation", LoaderStyle.SPINNER):
+                        # ENHANCED: Use structural processor for safer edits
+                        current_content = self.structural_processor.apply_intent_structurally(
+                            current_content, intent, file_path
+                        )
                     
-                    for j in range(2):
-                        sys.stdout.write(f"\r         {'⚙️' if j % 2 == 0 else '🔧'} Processing...")
-                        sys.stdout.flush()
-                        time.sleep(0.2)
-                    
-                    # ENHANCED: Use structural processor for safer edits
-                    current_content = self.structural_processor.apply_intent_structurally(
-                        current_content, intent, file_path
-                    )
-                    
-                    sys.stdout.write(f"\r         ✅ Applied {intent.action}\n")
-                    sys.stdout.flush()
+                    print(f"         ✅ Applied {intent.action}")
             
             # ENHANCED: Post-edit validation with progress
             print(f"   🔍 Validating changes...")
             
-            import time
-            import sys
-            for i in range(2):
-                sys.stdout.write(f"\r   {'🔍' if i % 2 == 0 else '🔎'} Checking result integrity...")
-                sys.stdout.flush()
-                time.sleep(0.3)
-            
-            post_edit_corrupted, post_severity = self.corruption_detector.is_file_corrupted(file_path, current_content)
+            with analysis_progress("result integrity"):
+                post_edit_corrupted, post_severity = self.corruption_detector.is_file_corrupted(file_path, current_content)
             
             if post_edit_corrupted and post_severity in [CorruptionSeverity.HIGH, CorruptionSeverity.CRITICAL]:
-                print(f"\r   ❌ Edit would introduce {post_severity.value} corruption - reverting")
+                print(f"   ❌ Edit would introduce {post_severity.value} corruption - reverting")
                 return False, f"Edit would corrupt {file_path} - changes reverted"
             else:
-                print(f"\r   ✅ Validation passed")
+                print(f"   ✅ Validation passed")
             
             # Write back if changed and validation passed
             if current_content != original_content:
                 print(f"   💾 Saving changes...")
                 
-                # Show save progress
-                import time
-                import sys
-                for i in range(2):
-                    sys.stdout.write(f"\r      {'💾' if i % 2 == 0 else '📝'} Writing to disk...")
-                    sys.stdout.flush()
-                    time.sleep(0.2)
-                
-                with open(target_file, 'w') as f:
-                    f.write(current_content)
+                # Use centralized progress for file writing
+                with file_progress(f"saving {file_path}"):
+                    update_current_task("writing to disk")
+                    with open(target_file, 'w') as f:
+                        f.write(current_content)
                 
                 # Show file statistics
                 lines_added = current_content.count('\n') - original_content.count('\n')
                 size_change = len(current_content) - len(original_content)
                 
-                print(f"\r      ✅ Saved successfully")
+                print(f"   ✅ Saved successfully")
                 print(f"   📊 Changes: {lines_added:+d} lines, {size_change:+d} characters")
                 
                 # Generate diff for debugging

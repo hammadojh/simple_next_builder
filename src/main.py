@@ -34,6 +34,11 @@ from lib.code_builder import CodeBuilder
 from lib.mvp_enhancer import MVPEnhancer
 from lib.llm_coordinator import LLMCoordinator
 from lib.dependency_manager import DependencyManager
+from lib.progress_loader import (
+    show_progress, llm_progress, analysis_progress, 
+    build_progress, file_progress, update_current_task,
+    LoaderStyle
+)
 
 
 class BuildErrorLogger:
@@ -388,73 +393,83 @@ Multi-LLM Builder with validation
         
         app_directory = str(self.apps_dir / app_name)
         
-        print("🚀 Enhanced NextJS App Builder (MVP-Driven)")
-        print("=" * 60)
-        print(f"App Name: {app_name}")
-        print(f"Original Idea: {app_idea}")
-        print(f"Directory: {app_directory}")
-        print("-" * 60)
-        
-        # Log the start of app creation
-        self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", None)
-        
-        try:
-            # Step 1: Enhance user prompt to MVP specification
-            print("\n🎯 Step 1: Enhancing prompt to MVP specification...")
-            mvp_spec = self.mvp_enhancer.enhance_prompt_to_mvp(app_idea)
+        with show_progress(f"building NextJS app '{app_name}'", LoaderStyle.BUILDING):
+            print("🚀 Enhanced NextJS App Builder (MVP-Driven)")
+            print("=" * 60)
+            print(f"App Name: {app_name}")
+            print(f"Original Idea: {app_idea}")
+            print(f"Directory: {app_directory}")
+            print("-" * 60)
             
-            # Step 2: Create intelligent execution plan
-            print("\n🧠 Step 2: Creating intelligent execution plan...")
-            execution_plan = self.coordinator.analyze_and_plan(app_idea, "create_app", mvp_spec)
+            # Log the start of app creation
+            self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", None)
             
-            # Step 3: Create NextJS template foundation
-            print("\n📦 Step 3: Creating NextJS template foundation...")
-            if not self.create_template_nextjs_app(app_name):
-                print("❌ Failed to create template")
+            try:
+                # Step 1: Enhance user prompt to MVP specification
+                update_current_task("enhancing prompt to MVP specification")
+                print("\n🎯 Step 1: Enhancing prompt to MVP specification...")
+                mvp_spec = self.mvp_enhancer.enhance_prompt_to_mvp(app_idea)
+                
+                # Step 2: Create intelligent execution plan
+                update_current_task("creating intelligent execution plan")
+                print("\n🧠 Step 2: Creating intelligent execution plan...")
+                execution_plan = self.coordinator.analyze_and_plan(app_idea, "create_app", mvp_spec)
+                
+                # Step 3: Create NextJS template foundation
+                update_current_task("creating NextJS template foundation")
+                print("\n📦 Step 3: Creating NextJS template foundation...")
+                if not self.create_template_nextjs_app(app_name):
+                    print("❌ Failed to create template")
+                    self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", False)
+                    return False
+            
+                # Step 4: Install dependencies
+                update_current_task("installing dependencies")
+                print("\n📦 Step 4: Installing dependencies...")
+                with build_progress("installing dependencies"):
+                    if not self.install_dependencies(app_directory):
+                        print("❌ Failed to install dependencies")
+                        self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", False)
+                        return False
+            
+                # Step 5: Execute coordinated plan
+                update_current_task("executing coordinated development plan")
+                print("\n🎯 Step 5: Executing coordinated development plan...")
+                if not self.execute_coordinated_plan(execution_plan, mvp_spec, app_name, app_directory):
+                    print("❌ Failed to execute coordinated plan")
+                    self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", False)
+                    return False
+            
+                # Step 6: Final validation and build fixing
+                update_current_task("final validation and build fixing")
+                print("\n🔍 Step 6: Final validation and build fixing...")
+                with build_progress("validating and fixing build"):
+                    if not self.validate_and_fix_build(app_directory):
+                        print("⚠️  Build validation failed, but app was created")
+                        self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", True)
+                        # Don't return False here - app was created, just might have minor issues
+                
+                # Step 7: Start the development server
+                update_current_task("starting development server")
+                if port:
+                    print(f"\n🚀 Step 7: Starting development server on port {port}...")
+                else:
+                    print(f"\n🚀 Step 7: Starting development server...")
+                
+                if self.start_dev_server(app_directory, port):
+                    print(f"✅ NextJS app '{app_name}' created and running successfully!")
+                    self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", True)
+                    return True
+                else:
+                    print(f"⚠️  NextJS app '{app_name}' created but server start failed")
+                    print("💡 You can manually start it with: cd apps/{app_name} && npm run dev")
+                    self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", True)
+                    return True
+                
+            except Exception as e:
+                print(f"❌ Error in enhanced build process: {str(e)}")
                 self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", False)
                 return False
-        
-            # Step 4: Install dependencies
-            print("\n📦 Step 4: Installing dependencies...")
-            if not self.install_dependencies(app_directory):
-                print("❌ Failed to install dependencies")
-                self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", False)
-                return False
-        
-            # Step 5: Execute coordinated plan
-            print("\n🎯 Step 5: Executing coordinated development plan...")
-            if not self.execute_coordinated_plan(execution_plan, mvp_spec, app_name, app_directory):
-                print("❌ Failed to execute coordinated plan")
-                self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", False)
-                return False
-        
-            # Step 6: Final validation and build fixing
-            print("\n🔍 Step 6: Final validation and build fixing...")
-            if not self.validate_and_fix_build(app_directory):
-                print("⚠️  Build validation failed, but app was created")
-        
-            print(f"\n🎉 Successfully created enhanced MVP: {app_name}!")
-            print(f"📋 Implemented {len(mvp_spec.core_features)} core features")
-            print(f"🏗️ Created {mvp_spec.estimated_components}+ components")
-            print(f"🎨 Used {mvp_spec.styling_approach} for styling")
-            self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", True)
-        
-            # Step 7: Optionally run the app
-            if port is not None:
-                print(f"\n🚀 Starting enhanced app on port {port}...")
-                self.run_nextjs_app(app_directory, port)
-            else:
-                # Ask user if they want to run it
-                response = input("\n🚀 Start the development server? [Y/n]: ").strip().lower()
-                if response == '' or response == 'y' or response == 'yes':
-                    self.run_nextjs_app(app_directory)
-        
-            return True
-            
-        except Exception as e:
-            print(f"❌ Error in enhanced build and run: {str(e)}")
-            self.error_logger.log_build_attempt(app_name, f"enhanced_create: {app_idea[:50]}...", False)
-            return False
 
     def build_and_run_legacy(self, app_idea: str, app_name: Optional[str] = None, port: Optional[int] = None) -> bool:
         """

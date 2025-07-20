@@ -29,6 +29,13 @@ from .indexing import CodebaseIndexer
 from .version_manager import VersionManager
 from .llm_coordinator import LLMCoordinator
 
+# Add to imports section
+from .progress_loader import (
+    show_progress, llm_progress, analysis_progress, 
+    build_progress, file_progress, update_current_task,
+    LoaderStyle
+)
+
 
 class MultiLLMAppBuilder:
     def __init__(self, openai_api_key=None, openrouter_api_key=None, anthropic_api_key=None):
@@ -842,47 +849,52 @@ Multi-LLM Builder with validation
         
         app_path = self.get_app_path()
         
-        try:
-            # Change to app directory
-            original_dir = os.getcwd()
-            os.chdir(app_path)
-            
-            # Install dependencies if requested
-            if auto_install_deps:
-                print("📦 Installing dependencies...")
-                result = subprocess.run(['npm', 'install'], 
-                                      capture_output=True, text=True, timeout=120)
-                if result.returncode != 0:
-                    print(f"⚠️ npm install warnings: {result.stderr}")
-            
-            # Try to build the app with enhanced error capture
-            print("🔨 Building NextJS app...")
-            result = subprocess.run(['npm', 'run', 'build'], 
-                                  capture_output=True, text=True, timeout=300)
-            
-            if result.returncode == 0:
-                print("✅ Build successful!")
-                return True
-            else:
-                print("❌ Build failed:")
+        with build_progress("NextJS application"):
+            try:
+                # Change to app directory
+                original_dir = os.getcwd()
+                os.chdir(app_path)
                 
-                # Enhanced error parsing for TypeScript issues
-                error_output = result.stdout + result.stderr
-                self._parse_and_display_typescript_errors(error_output)
+                # Install dependencies if requested
+                if auto_install_deps:
+                    update_current_task("installing dependencies")
+                    print("📦 Installing dependencies...")
+                    result = subprocess.run(['npm', 'install'], 
+                                          capture_output=True, text=True, timeout=120)
+                    if result.returncode != 0:
+                        print(f"⚠️ npm install warnings: {result.stderr}")
+                
+                # Try to build the app with enhanced error capture
+                update_current_task("building NextJS app")
+                print("🔨 Building NextJS app...")
+                result = subprocess.run(['npm', 'run', 'build'], 
+                                      capture_output=True, text=True, timeout=300)
+                
+                if result.returncode == 0:
+                    print("✅ Build successful!")
+                    return True
+                else:
+                    print("❌ Build failed:")
+                    
+                    # Enhanced error parsing for TypeScript issues
+                    error_output = result.stdout + result.stderr
+                    self._parse_and_display_typescript_errors(error_output)
+                    return False
+                    
+            except subprocess.TimeoutExpired:
+                print("⏰ Build timed out")
                 return False
-                
-        except subprocess.TimeoutExpired:
-            print("⏰ Build timed out")
-            return False
-        except FileNotFoundError:
-            print("❌ npm not found - please install Node.js")
-            return False
-        except Exception as e:
-            print(f"❌ Build error: {str(e)}")
-            return False
-        finally:
-            # Return to original directory
-            os.chdir(original_dir)
+            except FileNotFoundError:
+                print("❌ npm not found - please install Node.js")
+                return False
+            except Exception as e:
+                print(f"❌ Build error: {str(e)}")
+                return False
+            finally:
+                try:
+                    os.chdir(original_dir)
+                except:
+                    pass
     
     def _parse_and_display_typescript_errors(self, error_output: str):
         """Parse and display TypeScript errors in a structured way."""
@@ -2184,68 +2196,75 @@ Focus on fixing:
         Returns:
             Tuple of (is_valid, response)
         """
-        try:
-            messages = [
-                {"role": "system", "content": self.get_system_prompt()},
-                {"role": "user", "content": prompt}
-            ]
-            
-            response = self.generate_with_fallback(messages, context=context)
-            if not response:
-                return False, ""
-            
-            # 🔍 DEBUG: Save and print the raw AI response
-            import os
-            import time
-            
-            # Save to debug file
-            debug_dir = "debug_responses"
-            os.makedirs(debug_dir, exist_ok=True)
-            timestamp = int(time.time())
-            debug_file = f"{debug_dir}/ai_response_{timestamp}.txt"
-            
-            with open(debug_file, 'w', encoding='utf-8') as f:
-                f.write("=== RAW AI RESPONSE ===\n")
-                f.write(response)
-                f.write("\n=== END RESPONSE ===\n")
-            
-            print(f"🔍 DEBUG: Raw AI response saved to {debug_file}")
-            print("🔍 DEBUG: First 500 characters of AI response:")
-            print("-" * 50)
-            print(response[:500])
-            print("-" * 50)
-            if len(response) > 500:
-                print(f"... (truncated, full response in {debug_file})")
-            
-            # Check for JSX issues in the raw response
-            if 'return (' in response and '}>' in response:
-                jsx_samples = []
-                lines = response.split('\n')
-                for i, line in enumerate(lines):
-                    if 'return (' in line:
-                        # Get this line and next few lines to see the pattern
-                        sample = '\n'.join(lines[i:i+10])
-                        jsx_samples.append(f"Line {i+1}: {sample}")
+        with llm_progress("AI API"):
+            try:
+                update_current_task("preparing request")
+                messages = [
+                    {"role": "system", "content": self.get_system_prompt()},
+                    {"role": "user", "content": prompt}
+                ]
                 
-                if jsx_samples:
-                    print("🚨 POTENTIAL JSX ISSUES DETECTED IN RAW RESPONSE:")
-                    for sample in jsx_samples[:3]:  # Show first 3 samples
-                        print(sample)
-                        print("-" * 30)
-            
-            # Validate the response
-            is_valid, validation_feedback = self.validate_response(response, context)
-            
-            if not is_valid:
-                print(f"❌ Response validation failed: {validation_feedback}")
-                print(f"🔍 Full response saved to {debug_file} for analysis")
-                return False, response
-            
-            return True, response
-            
-        except Exception as e:
-            print(f"❌ Error making AI request: {str(e)}")
-            return False, ""
+                update_current_task("generating AI response")
+                response = self.generate_with_fallback(messages, context=context)
+                if not response:
+                    return False, ""
+                
+                # 🔍 DEBUG: Save and print the raw AI response
+                update_current_task("processing AI response")
+                import os
+                import time
+                
+                # Save to debug file
+                debug_dir = "debug_responses"
+                os.makedirs(debug_dir, exist_ok=True)
+                timestamp = int(time.time())
+                debug_file = f"{debug_dir}/ai_response_{timestamp}.txt"
+                
+                with open(debug_file, 'w', encoding='utf-8') as f:
+                    f.write("=== RAW AI RESPONSE ===\n")
+                    f.write(response)
+                    f.write("\n=== END RESPONSE ===\n")
+                
+                print(f"🔍 DEBUG: Raw AI response saved to {debug_file}")
+                print("🔍 DEBUG: First 500 characters of AI response:")
+                print("-" * 50)
+                print(response[:500])
+                print("-" * 50)
+                if len(response) > 500:
+                    print(f"... (truncated, full response in {debug_file})")
+                
+                # Check for JSX issues in the raw response
+                if 'return (' in response and '}>' in response:
+                    jsx_samples = []
+                    lines = response.split('\n')
+                    for i, line in enumerate(lines):
+                        if 'return (' in line:
+                            # Get this line and next few lines to see the pattern
+                            sample = '\n'.join(lines[i:i+10])
+                            jsx_samples.append(f"Line {i+1}: {sample}")
+                    
+                    if jsx_samples:
+                        print("🚨 POTENTIAL JSX ISSUES DETECTED IN RAW RESPONSE:")
+                        for sample in jsx_samples[:3]:  # Show first 3 samples
+                            print(sample)
+                            print("-" * 30)
+                
+                # Validate the response
+                update_current_task("validating AI response")
+                is_valid, validation_feedback = self.validate_response(response, context=context)
+                
+                if is_valid:
+                    print("✅ Generated valid response")
+                    return True, response
+                else:
+                    print("❌ Response validation failed:")
+                    for feedback in validation_feedback[:3]:  # Limit feedback
+                        print(f"   - {feedback}")
+                    return False, response
+                    
+            except Exception as e:
+                print(f"❌ Error in AI request: {str(e)}")
+                return False, ""
 
     def extract_error_files_content(self, build_errors: List[str], app_structure: str) -> str:
         """

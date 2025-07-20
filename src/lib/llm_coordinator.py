@@ -29,6 +29,13 @@ try:
 except ImportError:
     pass
 
+# Import progress loader system
+from .progress_loader import (
+    show_progress, llm_progress, analysis_progress, 
+    build_progress, file_progress, update_current_task,
+    LoaderStyle
+)
+
 
 @dataclass
 class Task:
@@ -104,38 +111,44 @@ class LLMCoordinator:
         Returns:
             ExecutionPlan: Detailed plan for executing the request
         """
-        print("🧠 Analyzing request and creating execution plan...")
-        
-        # Use MVP spec if available, otherwise use original request
-        planning_request = user_request
-        if mvp_spec:
-            print(f"📋 Using enhanced MVP specification")
-            print(f"🎯 Complexity level: {mvp_spec.complexity_level}")
-            print(f"📊 Estimated components: {mvp_spec.estimated_components}")
-            planning_request = mvp_spec.enhanced_prompt
-        else:
-            print(f"📝 Using original request: {user_request}")
-        
-        # Auto-detect request type if not specified
-        if request_type == "auto":
-            request_type = self._classify_request_type(planning_request)
-        
-        print(f"🔍 Detected request type: {request_type}")
-        
-        # Use coordinator LLM to create detailed plan
-        planning_prompt = self._get_planning_prompt(planning_request, request_type, mvp_spec)
-        
-        plan_response = self._call_coordinator_llm(planning_prompt, "planning")
-        
-        if not plan_response:
-            # Fallback to simple plan
-            return self._create_fallback_plan(planning_request, request_type, mvp_spec)
-        
-        # Parse the plan from LLM response
-        execution_plan = self._parse_execution_plan(plan_response, planning_request, request_type)
-        
-        self.current_plan = execution_plan
-        
+        with analysis_progress("user request and creating execution plan"):
+            # Use MVP spec if available, otherwise use original request
+            planning_request = user_request
+            if mvp_spec:
+                update_current_task("using enhanced MVP specification")
+                print(f"📋 Using enhanced MVP specification")
+                print(f"🎯 Complexity level: {mvp_spec.complexity_level}")
+                print(f"📊 Estimated components: {mvp_spec.estimated_components}")
+                planning_request = mvp_spec.enhanced_prompt
+            else:
+                update_current_task("using original request")
+                print(f"📝 Using original request: {user_request}")
+            
+            # Auto-detect request type if not specified
+            if request_type == "auto":
+                update_current_task("classifying request type")
+                request_type = self._classify_request_type(planning_request)
+            
+            print(f"🔍 Detected request type: {request_type}")
+            
+            # Use coordinator LLM to create detailed plan
+            update_current_task("creating detailed execution plan")
+            planning_prompt = self._get_planning_prompt(planning_request, request_type, mvp_spec)
+            
+            with llm_progress("Coordinator AI"):
+                plan_response = self._call_coordinator_llm(planning_prompt, "planning")
+            
+            if not plan_response:
+                update_current_task("creating fallback plan")
+                # Fallback to simple plan
+                return self._create_fallback_plan(planning_request, request_type, mvp_spec)
+            
+            # Parse the plan from LLM response
+            update_current_task("parsing execution plan")
+            execution_plan = self._parse_execution_plan(plan_response, planning_request, request_type)
+            
+            self.current_plan = execution_plan
+            
         print(f"📋 Created execution plan with {len(execution_plan.tasks)} tasks")
         print(f"⏱️ Estimated complexity: {execution_plan.complexity_assessment}")
         print(f"🎯 Strategy: {execution_plan.execution_strategy}")
@@ -152,53 +165,58 @@ class LLMCoordinator:
         Returns:
             bool: True if execution succeeded, False otherwise
         """
-        print("🚀 Starting coordinated execution...")
-        print(f"📋 Executing plan: {plan.request_id}")
-        
-        plan.status = "executing"
-        
-        # Sort tasks by dependencies and priority
-        execution_order = self._determine_execution_order(plan.tasks)
-        
-        completed_tasks = set()
-        failed_tasks = set()
-        
-        for task in execution_order:
-            print(f"\n🔄 Executing task: {task.description}")
+        with show_progress(f"executing {len(plan.tasks)} coordinated tasks", LoaderStyle.SPINNER):
+            print("🚀 Starting coordinated execution...")
+            print(f"📋 Executing plan: {plan.request_id}")
             
-            # Check if dependencies are met
-            if not self._dependencies_satisfied(task, completed_tasks):
-                print(f"⏳ Waiting for dependencies: {task.dependencies}")
-                continue
+            plan.status = "executing"
             
-            # Execute the task
-            task.status = "in_progress"
-            success = self._execute_task(task)
+            # Sort tasks by dependencies and priority
+            update_current_task("determining execution order")
+            execution_order = self._determine_execution_order(plan.tasks)
             
-            if success:
-                task.status = "completed"
-                completed_tasks.add(task.id)
-                print(f"✅ Task completed: {task.description}")
-            else:
-                task.status = "failed"
-                failed_tasks.add(task.id)
-                print(f"❌ Task failed: {task.description}")
+            completed_tasks = set()
+            failed_tasks = set()
+            
+            for i, task in enumerate(execution_order, 1):
+                update_current_task(f"[{i}/{len(execution_order)}] {task.description}")
+                print(f"\n🔄 Executing task: {task.description}")
                 
-                # Attempt recovery or adjust plan
-                if not self._handle_task_failure(task, plan):
-                    print("🛑 Critical failure - stopping execution")
-                    plan.status = "failed"
-                    return False
-        
-        # Validate overall success
-        if self._validate_plan_completion(plan):
-            plan.status = "completed"
-            print("🎉 Plan execution completed successfully!")
-            return True
-        else:
-            plan.status = "failed"
-            print("❌ Plan execution failed validation")
-            return False
+                # Check if dependencies are met
+                if not self._dependencies_satisfied(task, completed_tasks):
+                    print(f"⏳ Waiting for dependencies: {task.dependencies}")
+                    continue
+                
+                # Execute the task
+                task.status = "in_progress"
+                success = self._execute_task(task)
+                
+                if success:
+                    task.status = "completed"
+                    completed_tasks.add(task.id)
+                    print(f"✅ Task completed: {task.description}")
+                else:
+                    task.status = "failed"
+                    failed_tasks.add(task.id)
+                    print(f"❌ Task failed: {task.description}")
+                    
+                    # Attempt recovery or adjust plan
+                    update_current_task(f"handling failure for task {task.id}")
+                    if not self._handle_task_failure(task, plan):
+                        print("🛑 Critical failure - stopping execution")
+                        plan.status = "failed"
+                        return False
+            
+            # Validate overall success
+            update_current_task("validating plan completion")
+            if self._validate_plan_completion(plan):
+                plan.status = "completed"
+                print("🎉 Plan execution completed successfully!")
+                return True
+            else:
+                plan.status = "failed"
+                print("❌ Plan execution failed validation")
+                return False
     
     def coordinate_app_creation(self, app_idea: str) -> Tuple[bool, Optional[str]]:
         """
@@ -631,11 +649,12 @@ Focus on creating rich, interactive, production-ready frontend applications."""
     
     def _execute_analyze_context_task(self, task: Task) -> bool:
         """Execute a context analysis task."""
-        # This would analyze the current codebase or requirements
-        # For now, we'll simulate this
-        print("  📊 Analyzing context...")
-        task.result = {"analysis": "Context analyzed", "insights": []}
-        return True
+        with analysis_progress("context and requirements"):
+            # This would analyze the current codebase or requirements
+            # For now, we'll simulate this
+            print("  📊 Analyzing context...")
+            task.result = {"analysis": "Context analyzed", "insights": []}
+            return True
     
     def _execute_create_file_task(self, task: Task) -> bool:
         """Execute a file creation task."""
@@ -643,15 +662,17 @@ Focus on creating rich, interactive, production-ready frontend applications."""
             print("❌ No app builder available")
             return False
         
-        print(f"  📄 Creating file based on: {task.llm_instructions}")
-        
-        try:
-            # Build prompt for file creation
-            context_info = ""
-            if task.context_needed:
-                context_info = self._gather_context_for_task(task)
+        with file_progress(f"creating file for {task.description}"):
+            print(f"  📄 Creating file based on: {task.llm_instructions}")
             
-            create_prompt = f"""You are creating a specific file for a NextJS application.
+            try:
+                # Build prompt for file creation
+                update_current_task("gathering context information")
+                context_info = ""
+                if task.context_needed:
+                    context_info = self._gather_context_for_task(task)
+                
+                create_prompt = f"""You are creating a specific file for a NextJS application.
 
 TASK: {task.description}
 INSTRUCTIONS: {task.llm_instructions}
@@ -663,51 +684,55 @@ Generate the file content using the <new filename="path/to/file"> syntax.
 Focus ONLY on this specific file and task.
 Make sure the file is complete and follows NextJS/TypeScript best practices.
 """
-            
-            # Call LLM to generate file content
-            is_valid, response = self.app_builder.make_openai_request(create_prompt, "create")
-            
-            if not is_valid:
-                print("❌ Failed to generate file content")
-                return False
-            
-            # Apply the generated content using CodeBuilder
-            from .code_builder import CodeBuilder
-            import tempfile
-            import os
-            
-            # Save to temporary file
-            temp_file = f"temp_task_{task.id}_{int(time.time())}.txt"
-            with open(temp_file, 'w') as f:
-                f.write(response)
-            
-            # Apply using CodeBuilder
-            if hasattr(self.app_builder, 'get_app_path'):
-                app_path = self.app_builder.get_app_path()
-            else:
-                # Fallback for new app creation
-                app_path = "."
-            
-            code_builder = CodeBuilder(temp_file, app_path)
-            success = code_builder.build()
-            
-            # Clean up temp file
-            try:
-                os.remove(temp_file)
-            except:
-                pass
-            
-            if success:
-                task.result = {"file_created": True, "method": "llm_generated"}
-                print(f"  ✅ File created successfully")
-                return True
-            else:
-                print(f"  ❌ Failed to apply file creation")
-                return False
                 
-        except Exception as e:
-            print(f"  ❌ Error creating file: {str(e)}")
-            return False
+                # Call LLM to generate file content
+                update_current_task("generating file content with AI")
+                with llm_progress(f"Code Generation AI"):
+                    is_valid, response = self.app_builder.make_openai_request(create_prompt, "create")
+                
+                if not is_valid:
+                    print("❌ Failed to generate file content")
+                    return False
+                
+                # Apply the generated content using CodeBuilder
+                update_current_task("applying generated content")
+                from .code_builder import CodeBuilder
+                import tempfile
+                import os
+                
+                # Save to temporary file
+                temp_file = f"temp_task_{task.id}_{int(time.time())}.txt"
+                with open(temp_file, 'w') as f:
+                    f.write(response)
+                
+                # Apply using CodeBuilder
+                if hasattr(self.app_builder, 'get_app_path'):
+                    app_path = self.app_builder.get_app_path()
+                else:
+                    # Fallback for new app creation
+                    app_path = "."
+                
+                with build_progress("applying file changes"):
+                    code_builder = CodeBuilder(temp_file, app_path)
+                    success = code_builder.build()
+                
+                # Clean up temp file
+                try:
+                    os.remove(temp_file)
+                except:
+                    pass
+                
+                if success:
+                    task.result = {"file_created": True, "method": "llm_generated"}
+                    print(f"  ✅ File created successfully")
+                    return True
+                else:
+                    print(f"  ❌ Failed to apply file creation")
+                    return False
+                    
+            except Exception as e:
+                print(f"  ❌ Error creating file: {str(e)}")
+                return False
     
     def _execute_edit_file_task(self, task: Task) -> bool:
         """Execute a file editing task."""
